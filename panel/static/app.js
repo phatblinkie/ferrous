@@ -6,6 +6,8 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 
 let OVERVIEW = { hosts: [] };   // last /api/overview payload
 let pollTimer = null;
+let ACTIVE = "servers";         // active tab
+let CUR = null;                 // selected server key: "<hostId>:<containerId>"
 const HOST_FILTER = () => $("#host-filter").value;
 
 /* ------------------------------------------------------------- api helper */
@@ -38,7 +40,16 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-/* ------------------------------------------------------------- auth */
+function fmtDur(sec) {
+  if (sec == null) return "–";
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+/* ------------------------------------------------------------- auth / tabs */
 function showLogin() { $("#login").classList.remove("hidden"); $("#login-user").focus(); }
 function hideLogin() { $("#login").classList.add("hidden"); }
 
@@ -61,27 +72,94 @@ $("#login-form").addEventListener("submit", async (e) => {
 $("#btn-logout").addEventListener("click", async () => {
   await api("/api/logout", { method: "POST", body: {} });
   stopPoll();
-  closeConsole();
+  stopStream();
+  setupPlTimer();
   showLogin();
 });
 
-$$(".tab").forEach((b) => b.addEventListener("click", () => {
-  $$(".tab").forEach((x) => x.classList.toggle("active", x === b));
-  $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + b.dataset.tab));
-}));
+function activateTab(name) {
+  ACTIVE = name;
+  $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
+  if (name === "players") refreshPlayers();
+  setupPlTimer();
+}
+$$(".tab").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
 
 $("#btn-refresh").addEventListener("click", () => pollOverview());
+
+/* ------------------------------------------------------------- selection */
+function selected() {
+  if (!CUR) return null;
+  const i = CUR.indexOf(":");
+  const hid = CUR.slice(0, i), sid = CUR.slice(i + 1);
+  const host = OVERVIEW.hosts.find((h) => String(h.id) === hid);
+  const srv = host && host.servers.find((s) => s.id === sid);
+  return host && srv ? { host, srv } : null;
+}
+
+function renderServerSel() {
+  const sel = $("#server-sel");
+  const keys = [];
+  const labels = {};
+  for (const h of OVERVIEW.hosts) {
+    for (const s of h.servers) {
+      const k = `${h.id}:${s.id}`;
+      keys.push(k);
+      labels[k] = `${h.name} › ${s.name || s.short_id}`;
+    }
+  }
+  // keep the current selection when it still exists; else the remembered one;
+  // else the first server
+  const stored = localStorage.getItem("ferrous.server");
+  if (CUR && !keys.includes(CUR)) CUR = null;
+  if (!CUR && stored && keys.includes(stored)) CUR = stored;
+  if (!CUR && keys.length) CUR = keys[0];
+
+  sel.innerHTML = keys.length ? "" : '<option value="">(no servers)</option>';
+  for (const k of keys) {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = labels[k];
+    sel.appendChild(o);
+  }
+  if (CUR) sel.value = CUR;
+}
+
+$("#server-sel").addEventListener("change", (e) => {
+  CUR = e.target.value || null;
+  onServerChange();
+});
+
+// called when the selected server changes: re-point every server-scoped view
+function onServerChange() {
+  if (CUR) localStorage.setItem("ferrous.server", CUR); // never wipe on transient empty
+  // logs
+  logBuf = [];
+  $("#logview").innerHTML = "";
+  $("#log-count").textContent = "0 lines";
+  startStream();
+  // players
+  closeDrawer();
+  if (ACTIVE === "players") refreshPlayers();
+  setupPlTimer();
+  // console
+  $("#conview").innerHTML = "";
+}
 
 /* ------------------------------------------------------------- overview */
 async function pollOverview() {
   const { status, data } = await api("/api/overview");
   if (status !== 200 || !data) return;
   OVERVIEW = data;
+  const prev = CUR;
   renderHeader();
   renderHostFilter();
+  renderServerSel();
   renderServers();
   renderHosts();
   $("#srv-updated").textContent = "updated " + new Date().toLocaleTimeString();
+  if (CUR !== prev) onServerChange();
 }
 
 function renderHeader() {
@@ -133,8 +211,9 @@ function renderServers() {
     }
     for (const s of h.servers) {
       const run = s.state === "running";
-      rows.push(`<tr data-h="${h.id}" data-s="${esc(s.id)}">
-        <td><b>${esc(s.name || s.short_id)}</b>${s.managed ? "" : ' <span class="dim">(foreign)</span>'}</td>
+      const isCur = CUR === `${h.id}:${s.id}`;
+      rows.push(`<tr data-h="${h.id}" data-s="${esc(s.id)}"${isCur ? ' class="sel"' : ""}>
+        <td><b>${esc(s.name || s.short_id)}</b>${s.managed ? "" : ' <span class="dim">(foreign)</span>'}${s.rcon ? ' <span class="pill grey" title="WebRCON configured">rcon</span>' : ""}</td>
         <td class="dim">${esc(h.name)}</td>
         <td class="dim">${esc(s.image)}</td>
         <td>${statePill(s.state)}</td>
@@ -144,7 +223,7 @@ function renderServers() {
           <button class="btn sm warn" data-act="stop" ${run ? "" : "disabled"} title="stop">■</button>
           <button class="btn sm accent" data-act="restart" ${run ? "" : "disabled"} title="restart">↻</button>
         </td>
-        <td><button class="btn sm con">console</button></td>
+        <td><button class="btn sm con" title="select this server and open its live logs">logs ▸</button></td>
       </tr>`);
     }
   }
@@ -159,7 +238,12 @@ function renderServers() {
     const srv = host && host.servers.find((s) => s.id === sid);
     tr.querySelectorAll("[data-act]").forEach((b) =>
       b.addEventListener("click", () => power(host, srv, b.dataset.act)));
-    tr.querySelector(".con").addEventListener("click", () => openConsole(host, srv));
+    tr.querySelector(".con").addEventListener("click", () => {
+      CUR = `${hid}:${sid}`;
+      $("#server-sel").value = CUR;
+      onServerChange();
+      activateTab("logs");
+    });
   });
 }
 
@@ -182,7 +266,7 @@ async function power(host, srv, action) {
   pollOverview();
 }
 
-/* ------------------------------------------------------------- console */
+/* ------------------------------------------------------------- live logs */
 let es = null, logBuf = [], follow = true, renderQueued = false;
 const MAX_LINES = 3000;
 
@@ -244,27 +328,24 @@ function rerender() {
   scheduleScroll();
 }
 
-let CON = null;  // {host, srv}
-
-function openConsole(host, srv) {
-  if (!host || !srv) return;
-  CON = { host, srv };
-  $("#console-panel").classList.remove("hidden");
-  $("#con-title").textContent = `${srv.name} @ ${host.name}`;
-  logBuf = []; $("#logview").innerHTML = ""; $("#log-count").textContent = "0 lines";
-  startStream();
-}
-
-function closeConsole() {
+function stopStream() {
   if (es) { es.close(); es = null; }
-  CON = null;
-  $("#console-panel").classList.add("hidden");
+  $("#log-state").textContent = "no server selected";
+  $("#log-state").className = "pill grey";
 }
 
 function startStream() {
   if (es) es.close();
-  if (!CON) return;
-  const url = `/api/logs?host=${CON.host.id}&server=${encodeURIComponent(CON.srv.id)}&tail=200&follow=1`;
+  es = null;
+  const sel = selected();
+  if (!sel) {
+    $("#log-title").textContent = "logs";
+    $("#log-state").textContent = "no server selected";
+    $("#log-state").className = "pill grey";
+    return;
+  }
+  $("#log-title").textContent = `${sel.srv.name} @ ${sel.host.name}`;
+  const url = `/api/logs?host=${sel.host.id}&server=${encodeURIComponent(sel.srv.id)}&tail=200&follow=1`;
   es = new EventSource(url);
   $("#log-state").textContent = "connecting…";
   $("#log-state").className = "pill grey";
@@ -305,8 +386,256 @@ $("#logview").addEventListener("scroll", () => {
   if (!atBottom && follow) { follow = false; $("#log-follow").checked = false; }
   else if (atBottom && !follow && $("#log-follow").checked) follow = true;
 });
-$("#con-close").addEventListener("click", closeConsole);
 $("#host-filter").addEventListener("change", renderServers);
+
+/* ------------------------------------------------------------- players */
+let plSel = null, invTimer = null, plTimer = null;
+
+function rconReady() {
+  const sel = selected();
+  if (!sel) return "no server selected — pick one in the header (or “logs ▸” in Servers)";
+  if (sel.srv.rcon === false) return "selected container has no ferrous.rcon_port label (not a ferrous game server?)";
+  return null;
+}
+
+async function refreshPlayers() {
+  const body = $("#pl-body");
+  const sel = selected();
+  const why = rconReady();
+  if (why) {
+    body.innerHTML = `<tr><td colspan="9" class="dim center">${esc(why)}</td></tr>`;
+    $("#pl-status").textContent = "–";
+    return;
+  }
+  const { status, data } = await api(`/api/players?host=${sel.host.id}&server=${encodeURIComponent(sel.srv.id)}`);
+  if (status !== 200 || !data) {
+    let msg = (data && data.error) || "no data";
+    if (msg.includes("rcon")) msg = "server offline or restarting — retrying automatically…";
+    body.innerHTML = `<tr><td colspan="9" class="dim center">${esc(msg)}</td></tr>`;
+    return;
+  }
+  const players = data.players || [];
+  const badge = $("#tab-count");
+  badge.textContent = String(players.length);
+  badge.classList.toggle("hidden", !players.length);
+
+  const st = data.status;
+  $("#pl-status").textContent = st
+    ? `${st.players ?? "–"}/${st.max ?? "–"} players` + (st.hostname ? ` · ${st.hostname}` : "")
+    : "–";
+
+  body.innerHTML = "";
+  if (!players.length) {
+    body.innerHTML = '<tr><td colspan="9" class="dim center">nobody online</td></tr>';
+  }
+  for (const p of players) {
+    const tr = document.createElement("tr");
+    tr.dataset.sid = p.SteamID;
+    if (plSel === p.SteamID) tr.classList.add("sel");
+    const hp = Math.max(0, Math.min(100, p.Health ?? 0));
+    const hcls = hp < 30 ? "low" : hp < 65 ? "mid" : "";
+    const pos = p.Position ? `${Math.round(p.Position.x)}, ${Math.round(p.Position.y)}, ${Math.round(p.Position.z)}` : "–";
+    tr.innerHTML = `
+      <td><b>${esc(p.DisplayName)}</b></td>
+      <td class="dim">${p.SteamID}</td>
+      <td>${p.Ping} ms</td>
+      <td><span class="healthbar ${hcls}"><i style="width:${hp}%"></i></span>${(p.Health ?? 0).toFixed(0)}</td>
+      <td>${fmtDur(p.ConnectedSeconds)}</td>
+      <td class="dim">${pos}</td>
+      <td>${p.TeamID && p.TeamID !== "0" ? p.TeamID : "–"}</td>
+      <td>${p.IsMuted ? "🔇" : ""}</td>
+      <td class="dim">${(p.Address || "").split(":")[0]}</td>`;
+    tr.addEventListener("click", () => openDrawer(p));
+    body.appendChild(tr);
+  }
+  $("#pl-updated").textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+function openDrawer(p) {
+  plSel = p.SteamID;
+  $("#dw-name").textContent = p.DisplayName || "?";
+  const g = $("#dw-grid");
+  g.innerHTML = "";
+  const rows = [
+    ["SteamID", p.SteamID], ["OwnerSteamID", p.OwnerSteamID && p.OwnerSteamID !== "0" ? p.OwnerSteamID : "–"],
+    ["EntityId", p.EntityId], ["Address", p.Address], ["Ping", p.Ping + " ms"],
+    ["Health", (p.Health ?? 0).toFixed(1)], ["Position", p.Position ? `${p.Position.x.toFixed(1)}, ${p.Position.y.toFixed(1)}, ${p.Position.z.toFixed(1)}` : "–"],
+    ["Connected", fmtDur(p.ConnectedSeconds)], ["TeamID", p.TeamID || "0"], ["IsMuted", String(!!p.IsMuted)],
+    ["ViolationLevel", p.ViolationLevel], ["CurrentLevel", p.CurrentLevel],
+  ];
+  for (const [k, v] of rows) {
+    const kk = document.createElement("div"); kk.className = "k"; kk.textContent = k;
+    const vv = document.createElement("div"); vv.className = "v"; vv.textContent = String(v ?? "–");
+    g.append(kk, vv);
+  }
+  $("#dw-raw").textContent = JSON.stringify(p, null, 2);
+  $("#pl-drawer").classList.remove("hidden");
+  refreshPlayers.__sel = p;
+  if (invTimer) clearInterval(invTimer);
+  loadInventory(p.SteamID);
+  invTimer = setInterval(() => { if (plSel) loadInventory(plSel); }, 5000);
+}
+
+function invChip(it) {
+  const amt = it.amount > 1 ? `<b>${it.amount}×</b> ` : "";
+  const cond = it.cond != null && it.cond < 100 ? `<i class="cond">${it.cond}%</i>` : "";
+  let h = `<div class="inv-item" title="${esc(it.shortname)}${it.cat ? " (" + esc(it.cat) + ")" : ""}">${amt}${esc(it.name)}${cond}</div>`;
+  if (it.contents && it.contents.length) {
+    h += `<div class="inv-sub">${it.contents.map(invChip).join("")}</div>`;
+  }
+  return h;
+}
+
+async function loadInventory(sid) {
+  const el = $("#dw-inv");
+  if (!el || plSel !== sid) return;
+  const sel = selected();
+  if (!sel) return;
+  const q = `host=${sel.host.id}&server=${encodeURIComponent(sel.srv.id)}&sid=${encodeURIComponent(sid)}`;
+  const { status, data } = await api(`/api/inventory?${q}`);
+  if (plSel !== sid) return;   // drawer switched player while fetching
+  if (status !== 200 || !data || !data.player) {
+    el.innerHTML = `<span class="dim">${esc((data && data.error) || "no inventory data")}</span>`;
+    $("#inv-updated").textContent = "";
+    return;
+  }
+  const p = data.player;
+  let meta = "";
+  if (p.calories != null) meta += ` · 🔥 ${p.calories} · 💧 ${p.hydration}`;
+  $("#inv-updated").textContent = meta;
+  let html = "";
+  for (const [key, label] of [["belt", "Belt"], ["wear", "Wear"], ["main", "Main"]]) {
+    const items = p[key] || [];
+    html += `<div class="inv-group"><div class="inv-label">${label} <span class="dim">${items.length}</span></div><div class="inv-items">`;
+    html += items.length ? items.map(invChip).join("") : '<span class="dim">empty</span>';
+    html += `</div></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function closeDrawer() {
+  $("#pl-drawer").classList.add("hidden");
+  plSel = null;
+  refreshPlayers.__sel = null;
+  if (invTimer) { clearInterval(invTimer); invTimer = null; }
+}
+
+$("#dw-close").addEventListener("click", () => {
+  closeDrawer();
+  refreshPlayers();
+});
+
+// shared RCON runner for kick/ban/drawer actions (panel maps agent failures
+// to 200 {ok:false} so they render inline)
+async function rconCmd(cmd, showIn = null) {
+  const sel = selected();
+  if (!sel) {
+    if (showIn) showIn.textContent = "[error] no server selected";
+    return null;
+  }
+  const { status, data } = await api("/api/rcon", {
+    method: "POST",
+    body: { host: sel.host.id, server: sel.srv.id, cmd },
+  });
+  if (status === 200 && data.ok) {
+    if (showIn) showIn.textContent = data.out || "(no output)";
+    return data.out || "";
+  }
+  const err = (data && data.error) || "failed";
+  if (showIn) showIn.textContent = "[error] " + err;
+  toast(`"${cmd}": ${err}`, "bad");
+  return null;
+}
+
+$("#dw-kick").addEventListener("click", async () => {
+  const p = refreshPlayers.__sel;
+  if (!p) return;
+  if (!confirm(`Kick ${p.DisplayName}?`)) return;
+  const out = await rconCmd(`kick ${p.SteamID}`);
+  if (out !== null) toast(`kick sent: ${out || "(no output)"}`, "ok");
+  refreshPlayers();
+});
+$("#dw-ban").addEventListener("click", async () => {
+  const p = refreshPlayers.__sel;
+  if (!p) return;
+  const reason = prompt(`Ban ${p.DisplayName}? Optional reason:`, "banned via panel") || "banned";
+  if (reason === null) return;
+  const out = await rconCmd(`ban ${p.SteamID} ${reason}`);
+  if (out !== null) toast(`ban sent: ${out || "(no output)"}`, "ok");
+  refreshPlayers();
+});
+$$(".drawer-actions [data-cmd]").forEach((b) => b.addEventListener("click", async () => {
+  const p = refreshPlayers.__sel;
+  if (!p) return;
+  $("#dw-raw").textContent = "running…";
+  await rconCmd(b.dataset.cmd.replace("%STEAMID%", p.SteamID), $("#dw-raw"));
+}));
+
+$("#pl-refresh").addEventListener("click", refreshPlayers);
+$("#pl-auto").addEventListener("change", setupPlTimer);
+function setupPlTimer() {
+  if (plTimer) { clearInterval(plTimer); plTimer = null; }
+  const sel = selected();
+  const canPoll = ACTIVE === "players" && $("#pl-auto").checked && sel && sel.srv.rcon !== false;
+  if (canPoll) plTimer = setInterval(refreshPlayers, 4000);
+}
+
+/* ------------------------------------------------------------- console */
+const hist = []; let histIdx = -1;
+
+function conLine(text, cls) {
+  const view = $("#conview");
+  const d = document.createElement("div");
+  d.className = "logline " + (cls || "out");
+  d.textContent = text;
+  view.appendChild(d);
+  view.scrollTop = view.scrollHeight;
+}
+
+async function runCmd(cmd) {
+  if (!cmd.trim()) return;
+  conLine("› " + cmd, "cmd");
+  const sel = selected();
+  if (!sel) { conLine("[error] no server selected", "err"); return; }
+  const { status, data } = await api("/api/rcon", {
+    method: "POST",
+    body: { host: sel.host.id, server: sel.srv.id, cmd },
+  });
+  if (status === 200 && data.ok) {
+    const out = data.out || "(no output)";
+    const lines = out.split("\n");
+    const CAP = 600;   // big dumps like `find .` (~3500 lines) would choke the DOM
+    if (lines.length > CAP) {
+      lines.slice(0, 300).forEach((l) => conLine(l, "out"));
+      conLine(`… ${lines.length - CAP} lines omitted (output ${out.length} chars) …`, "cmd");
+      lines.slice(-299).forEach((l) => conLine(l, "out"));
+    } else {
+      lines.forEach((l) => conLine(l, "out"));
+    }
+  } else {
+    conLine("[error] " + ((data && data.error) || "failed"), "err");
+  }
+}
+
+$("#con-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const inp = $("#con-input");
+  const cmd = inp.value;
+  if (!cmd.trim()) return;
+  hist.push(cmd); histIdx = hist.length;
+  inp.value = "";
+  runCmd(cmd);
+});
+$("#con-input").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp") { if (histIdx > 0) { histIdx--; e.target.value = hist[histIdx]; e.preventDefault(); } }
+  else if (e.key === "ArrowDown") { if (histIdx < hist.length - 1) { histIdx++; e.target.value = hist[histIdx]; } else { histIdx = hist.length; e.target.value = ""; } e.preventDefault(); }
+});
+$$(".chip[data-cmd]").forEach((c) => c.addEventListener("click", () => runCmd(c.dataset.cmd)));
+$$(".chip[data-prompt]").forEach((c) => c.addEventListener("click", () => {
+  const pat = prompt(`${c.dataset.prompt} pattern (e.g. oxide, server, damage):`, "");
+  if (pat && pat.trim()) runCmd(`${c.dataset.prompt} ${pat.trim()}`);
+}));
+$("#con-clear").addEventListener("click", () => { $("#conview").innerHTML = ""; });
 
 /* ------------------------------------------------------------- hosts */
 let editId = null;   // null = add
@@ -420,7 +749,7 @@ function stopPoll() {
 }
 
 async function boot() {
-  await pollOverview();
+  await pollOverview();   // first render: picks CUR (or restores it) → starts the stream
   stopPoll();
   pollTimer = setInterval(pollOverview, 5000);
 }

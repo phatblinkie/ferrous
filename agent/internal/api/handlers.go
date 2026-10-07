@@ -79,6 +79,7 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
+	s.pruneHubs(list) // containers that vanished take their hub with them
 
 	servers := make([]map[string]any, 0, len(list))
 	for _, c := range list {
@@ -99,6 +100,7 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 			}
 			ports = append(ports, pm)
 		}
+		_, rconCapable := labels["ferrous.rcon_port"] // capability flag (list has no env)
 		servers = append(servers, map[string]any{
 			"id":       c.Id,
 			"short_id": shortID(c.Id),
@@ -108,6 +110,7 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 			"status":   c.Status,
 			"created":  time.Unix(c.Created, 0).UTC().Format(time.RFC3339),
 			"managed":  labels["ferrous.managed"] == "true",
+			"rcon":     rconCapable,
 			"labels":   labels,
 			"ports":    ports,
 		})

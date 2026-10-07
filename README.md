@@ -24,7 +24,7 @@ browser ── ferrous panel (central, docker compose)
 | 1 | repo scaffold, API contract, agent skeleton (token auth, `/ping`, docker discovery) | ✅ |
 | 2 | agent MVP: power actions, stats, `docker logs -f` SSE stream (throttled) | ✅ |
 | 3 | central panel MVP: host/server registry, status, power, live logs end-to-end | ✅ |
-| 4 | RCON through agent: players, inventory (InvDump), console | ▢ |
+| 4 | RCON through agent: players, inventory (InvDump), console | ✅ |
 | 5 | deployment wizard + server file API (configs, oxide plugins) | ▢ |
 | 6 | `ferrous/rustserver` image: entrypoint from proven start.sh/auto-update.sh | ▢ |
 | 7 | polish: install one-liner, docs, agent version-skew notice | ▢ |

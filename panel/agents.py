@@ -71,6 +71,20 @@ def stats(base, token, sid, timeout=12):
                     timeout=timeout)
 
 
+def rcon(base, token, sid, cmd, timeout_ms=None, timeout=15):
+    """Run an RCON command through the agent.
+
+    timeout_ms is the agent's server-side reply budget (it answers 504 after
+    it — on Rust that also means "command does not exist"); `timeout` is this
+    panel→agent socket budget and must exceed it.
+    """
+    path = f"/api/v1/servers/{urllib.parse.quote(sid)}/rcon"
+    body = {"cmd": cmd}
+    if timeout_ms is not None:
+        body["timeout_ms"] = int(timeout_ms)
+    return _request(base, token, path, method="POST", body=body, timeout=timeout)
+
+
 def stream_lines(base, token, sid, tail, follow, timeout=60):
     """Yield raw SSE bytes from the agent's log stream.
 

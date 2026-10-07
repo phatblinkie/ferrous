@@ -22,6 +22,9 @@
 
 <header>
   <div class="brand">⚙ <b>ferrous</b> <span class="dim">panel</span></div>
+  <select id="server-sel" title="selected server — drives the Live Logs / Players / Console tabs">
+    <option value="">(no servers)</option>
+  </select>
   <div class="stat"><span id="host-pill" class="pill grey">…</span></div>
   <div class="stat dim" id="host-summary">no hosts yet</div>
   <div class="spacer"></div>
@@ -31,6 +34,9 @@
 
 <nav>
   <button class="tab active" data-tab="servers">Servers</button>
+  <button class="tab" data-tab="logs">Live Logs</button>
+  <button class="tab" data-tab="players">Players <span id="tab-count" class="badge hidden">0</span></button>
+  <button class="tab" data-tab="console">Console</button>
   <button class="tab" data-tab="hosts">Hosts</button>
 </nav>
 
@@ -40,7 +46,7 @@
     <select id="host-filter" title="filter by host"><option value="all">all hosts</option></select>
     <span class="dim" id="srv-updated">–</span>
     <div class="spacer"></div>
-    <span class="dim">click ▶ ■ ↻ for power · open the live console below</span>
+    <span class="dim">click ▶ ■ ↻ for power · select a server to drive Logs / Players / Console</span>
   </div>
   <table class="tbl" id="srv-table">
     <thead><tr>
@@ -51,20 +57,80 @@
   </table>
 </section>
 
-<!-- console drawer -->
-<div id="console-panel" class="hidden">
+<!-- LIVE LOGS -->
+<section id="tab-logs" class="tabpane">
   <div class="toolbar">
-    <b id="con-title">console</b>
+    <b id="log-title">logs</b>
     <span class="pill grey" id="log-state">connecting…</span>
     <input id="log-filter" placeholder="filter (substring)…">
     <label class="chk"><input type="checkbox" id="log-follow" checked> follow</label>
     <button class="btn sm" id="log-clear">clear</button>
     <div class="spacer"></div>
     <span class="dim" id="log-count">0 lines</span>
-    <button class="btn sm" id="con-close">✕ close</button>
   </div>
   <div id="logview" class="logview"></div>
-</div>
+</section>
+
+<!-- PLAYERS -->
+<section id="tab-players" class="tabpane">
+  <div class="toolbar">
+    <button class="btn sm" id="pl-refresh">↻ refresh</button>
+    <label class="chk"><input type="checkbox" id="pl-auto" checked> auto (4s)</label>
+    <span class="dim" id="pl-status">–</span>
+    <span class="dim" id="pl-updated">–</span>
+    <div class="spacer"></div>
+    <span class="dim">click a row for full attributes + inventory</span>
+  </div>
+  <table class="players" id="pl-table">
+    <thead><tr>
+      <th>Name</th><th>SteamID</th><th>Ping</th><th>Health</th><th>On for</th>
+      <th>Pos</th><th>Team</th><th>Muted</th><th>Addr</th>
+    </tr></thead>
+    <tbody id="pl-body"><tr><td colspan="9" class="dim center">no data yet</td></tr></tbody>
+  </table>
+
+  <div id="pl-drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <b id="dw-name">–</b>
+      <div class="spacer"></div>
+      <button class="btn sm" id="dw-kick">Kick</button>
+      <button class="btn sm danger" id="dw-ban">Ban</button>
+      <button class="btn sm" id="dw-close">✕</button>
+    </div>
+    <div id="dw-grid" class="attrgrid"></div>
+    <div class="inv-head">Inventory <span class="dim" id="inv-updated"></span></div>
+    <div id="dw-inv" class="inv"><span class="dim">loading…</span></div>
+    <div class="drawer-actions">
+      <button class="btn sm" data-cmd='stats'>stats</button>
+      <button class="btn sm" data-cmd='playerlist verbose'>playerlist verbose</button>
+    </div>
+    <pre id="dw-raw" class="raw"></pre>
+  </div>
+</section>
+
+<!-- CONSOLE -->
+<section id="tab-console" class="tabpane">
+  <div class="toolbar">
+    <div class="chips">
+      <button class="chip" data-cmd="status">status</button>
+      <button class="chip" data-cmd="stats">stats</button>
+      <button class="chip" data-cmd="plugins">plugins</button>
+      <button class="chip" data-cmd="server.save">server.save</button>
+      <button class="chip" data-cmd="playerlist">playerlist</button>
+      <button class="chip" data-cmd="serverinfo">serverinfo</button>
+      <button class="chip" data-prompt="find">find …</button>
+    </div>
+    <div class="spacer"></div>
+    <span class="dim">↑↓ history</span>
+    <button class="btn sm" id="con-clear">clear</button>
+  </div>
+  <div id="conview" class="logview console"></div>
+  <form id="con-form" class="conbar">
+    <span class="prompt">rcon ›</span>
+    <input id="con-input" placeholder="type a command… e.g. say hello" autocomplete="off">
+    <button class="btn primary" type="submit">Run</button>
+  </form>
+</section>
 
 <!-- HOSTS -->
 <section id="tab-hosts" class="tabpane">

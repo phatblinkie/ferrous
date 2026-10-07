@@ -9,10 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"ferrous/agent/internal/docker"
+	"ferrous/agent/internal/rcon"
 )
 
 // Server holds handler dependencies.
@@ -22,13 +25,20 @@ type Server struct {
 	version string
 	log     *slog.Logger
 	started time.Time
+
+	hubsMu sync.Mutex           // guards hubs
+	hubs   map[string]*rcon.Hub // container id → persistent rcon connection
 }
 
 func New(d *docker.Client, token, version string, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
-	return &Server{docker: d, token: token, version: version, log: log, started: time.Now().UTC()}
+	return &Server{
+		docker: d, token: token, version: version, log: log,
+		started: time.Now().UTC(),
+		hubs:    make(map[string]*rcon.Hub),
+	}
 }
 
 // Handler builds the full middleware chain:
@@ -41,6 +51,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/servers/{id}/power", s.auth(http.HandlerFunc(s.handlePower)))
 	mux.Handle("GET /api/v1/servers/{id}/stats", s.auth(http.HandlerFunc(s.handleStats)))
 	mux.Handle("GET /api/v1/servers/{id}/logs", s.auth(http.HandlerFunc(s.handleLogs)))
+	mux.Handle("POST /api/v1/servers/{id}/rcon", s.auth(http.HandlerFunc(s.handleRcon)))
+	mux.Handle("GET /api/v1/servers/{id}/rcon", s.auth(http.HandlerFunc(s.handleRconStatus)))
 	// catch-all: unknown paths get the same auth wall, then a JSON 404/405
 	mux.Handle("/", s.auth(http.HandlerFunc(s.handleNotFound)))
 	return s.logging(mux)
@@ -111,15 +123,16 @@ var knownGET = map[string]bool{
 	"/api/v1/servers": true,
 }
 
-// paramEndpoints maps parameterized path suffixes to their methods (the
-// exact-path table can't match ids like /servers/abc/power).
+// paramEndpoints maps parameterized path suffixes to their allowed methods
+// (the exact-path table can't match ids like /servers/abc/rcon).
 var paramEndpoints = []struct {
-	suffix string
-	method string
+	suffix  string
+	methods []string
 }{
-	{"/power", http.MethodPost},
-	{"/stats", http.MethodGet},
-	{"/logs", http.MethodGet},
+	{"/power", []string{http.MethodPost}},
+	{"/stats", []string{http.MethodGet}},
+	{"/logs", []string{http.MethodGet}},
+	{"/rcon", []string{http.MethodGet, http.MethodPost}},
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
@@ -130,8 +143,8 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
 		for _, pe := range paramEndpoints {
-			if strings.HasSuffix(r.URL.Path, pe.suffix) && r.Method != pe.method {
-				w.Header().Set("Allow", pe.method)
+			if strings.HasSuffix(r.URL.Path, pe.suffix) && !slices.Contains(pe.methods, r.Method) {
+				w.Header().Set("Allow", strings.Join(pe.methods, ", "))
 				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 				return
 			}

@@ -19,7 +19,14 @@ type ContainerDetail struct {
 	Config struct {
 		Tty    bool              `json:"Tty"`
 		Labels map[string]string `json:"Labels"`
+		Env    []string          `json:"Env"`
 	} `json:"Config"`
+	NetworkSettings struct {
+		IPAddress string `json:"IPAddress"`
+		Networks  map[string]struct {
+			IPAddress string `json:"IPAddress"`
+		} `json:"Networks"`
+	} `json:"NetworkSettings"`
 }
 
 // Inspect returns container detail; unknown ids surface as *APIError{404}.

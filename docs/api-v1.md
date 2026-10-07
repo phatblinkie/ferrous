@@ -27,8 +27,8 @@ All endpoints are served by `ferrous-agent` on the listen address. Version prefi
 | POST | `/api/v1/servers/{id}/power` | ✅ phase 2 | `{action: start\|stop\|restart}`, `?grace=<0..120s>` (default 15, SIGTERM→SIGKILL) |
 | GET | `/api/v1/servers/{id}/stats` | ✅ phase 2 | one-shot cpu/mem/net/pids sample |
 | GET | `/api/v1/servers/{id}/logs?tail=N&follow=0\|1` | ✅ phase 2 | SSE stream of `docker logs -f` (throttled: 200 lines/s) |
-| POST | `/api/v1/servers/{id}/rcon` | ▢ 4 | `{cmd, timeout}` → correlated reply (hub held agent-side) |
-| GET | `/api/v1/servers/{id}/rcon-push` | ▢ 4 | SSE of WebRCON Identifier:0 push lines |
+| POST | `/api/v1/servers/{id}/rcon` | ✅ phase 4 | `{cmd, timeout_ms}` → correlated reply (hub held agent-side) |
+| GET | `/api/v1/servers/{id}/rcon` | ✅ phase 4 | hub diagnostics `{connected, error, pushes}` (never password/addr) |
 | GET | `/api/v1/servers/{id}/files/...` | ▢ 5 | read file, scoped to server data dir |
 | PUT | `/api/v1/servers/{id}/files/...` | ▢ 5 | write file (configs, oxide plugins) |
 | POST | `/api/v1/servers` | ▢ 5 | deploy: pull image → create volumes/ports/env → start |
@@ -103,3 +103,40 @@ stream closed), `error` (stream failure), or nothing (client disconnected).
 Throttle: fixed window, 200 lines/s; on strike it notices once, drops, and
 summarizes at window rollover or stream end. `tail` is `0..10000` or `all`
 (default 100); `follow=0` fetches history and ends.
+
+### POST /api/v1/servers/{id}/rcon
+
+Request: `{"cmd": "status", "timeout_ms": 8000}` — `cmd` ≤ 500 chars,
+`timeout_ms` 500..30000 (default 8000).
+
+```json
+{"ok": true, "out": "hostname: …\nplayers : 3 (75 max)", "ms": 4}
+```
+
+Errors (agent-side contract the panel maps):
+
+| status | when |
+|---|---|
+| 400 | empty/too-long cmd, bad `timeout_ms`, or container config missing (`ferrous.rcon_port` label absent / `RCON_PASSWORD` env absent) |
+| 403 | container not labeled `ferrous.managed=true` |
+| 404 | unknown container id |
+| 405 | method other than POST/GET |
+| 503 | hub not connected / connection lost / container not running — message contains lowercase `rcon` |
+| 504 | no reply within `timeout_ms` — on Rust this also means **the command does not exist** (vanilla servers stay silent) |
+
+Config contract: password comes from env `RCON_PASSWORD`; port from label
+`ferrous.rcon_port` (label presence = capability flag in `GET /servers`;
+empty value → 28016); address is the container IP, re-resolved per reconnect
+(root `NetworkSettings.IPAddress`, else first `Networks` entry) and never
+published. Handshake: `GET /{password}` (current Rust, not `/websocket/…`).
+
+### GET /api/v1/servers/{id}/rcon
+
+```json
+{"connected": true, "error": "", "pushes": 99, "time": "..."}
+```
+
+`pushes` counts WebRCON `Identifier:0` messages seen and discarded — console
+output is already delivered by the `logs` SSE endpoint, so there is **no
+`rcon-push` endpoint by design** (a second stream of the same text would
+double the browser's SSE load and race the docker-logs one).

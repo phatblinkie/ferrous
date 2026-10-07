@@ -4,6 +4,8 @@
 - host registry: agent base_url + bearer token, stored in SQLite
 - overview / power / stats proxied to agents (tokens never reach the browser)
 - live console: agent SSE bytes forwarded to the browser
+- rcon: players / inventory / console commands proxied through agent hubs
+  (504 = no reply → InvDump degradation, 503 = not connected → friendly retry)
 - CSRF: non-GET /api/* requires the X-Requested-With: ferrous header
 
 Config (env): FERROUS_DB, PANEL_SECRET, PANEL_ADMIN_USER, PANEL_ADMIN_PASSWORD,
@@ -405,6 +407,114 @@ def api_logs():
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no",
                              "Connection": "keep-alive"})
+
+
+# ------------------------------------------------------------------------ rcon
+def parse_status(text):
+    """port of the proven panel's `status` parser (players/max/queued/joining,
+    hostname — best effort, raw kept for display)."""
+    m = re.search(r"players\s*:\s*(\d+)\s*\((\d+) max\)(?:\s*\((\d+) queued\))?(?:\s*\((\d+) joining\))?",
+                  text or "")
+    out = {"players": None, "max": None, "queued": None, "joining": None, "raw": text or ""}
+    if m:
+        out.update(players=int(m.group(1)), max=int(m.group(2)),
+                   queued=int(m.group(3) or 0), joining=int(m.group(4) or 0))
+    h = re.search(r"hostname:\s*(.+)", text or "")
+    if h:
+        out["hostname"] = h.group(1).strip()
+    return out
+
+
+@app.get("/api/players")
+def api_players():
+    """playerlist verbose + status through the agent. Any failure answers 503
+    with a message containing 'rcon' — the UI turns that into its friendly
+    'server offline or restarting — retrying automatically…' row."""
+    h, resp = resolve_host()
+    if resp:
+        return resp
+    sid = request.args.get("server", "")
+    if not VALID_ID.match(sid):
+        return jsonify({"error": "bad server id"}), 400
+    try:
+        data = agents.rcon(h["base_url"], h["token"], sid,
+                           "playerlist verbose", timeout_ms=6000, timeout=12)
+    except agents.AgentError as e:
+        return jsonify({"error": f"rcon unavailable: {e.message}",
+                        "players": [], "status": None}), 503
+    try:
+        players = json.loads(data.get("out") or "") if (data.get("out") or "").strip() else []
+    except ValueError:
+        players = []
+    st = None
+    try:
+        sd = agents.rcon(h["base_url"], h["token"], sid, "status",
+                         timeout_ms=6000, timeout=12)
+        st = parse_status(sd.get("out", ""))
+    except Exception:
+        pass  # status is decoration: players still render without it
+    return jsonify({"players": players, "status": st})
+
+
+@app.get("/api/inventory")
+def api_inventory():
+    """On-demand InvDump lookup. Degradation contract (ported verbatim):
+    agent 504 (no reply) → 404 'needs uMod/InvDump'; connection trouble →
+    503; unparseable reply → 502."""
+    sid = request.args.get("sid", "")
+    if not sid.isdigit() or len(sid) != 17:
+        return jsonify({"error": "sid required"}), 400
+    h, resp = resolve_host()
+    if resp:
+        return resp
+    srv = request.args.get("server", "")
+    if not VALID_ID.match(srv):
+        return jsonify({"error": "bad server id"}), 400
+    try:
+        data = agents.rcon(h["base_url"], h["token"], srv, f"invdump.get {sid}",
+                           timeout_ms=3000, timeout=10)
+    except agents.AgentError as e:
+        if e.status == 504:
+            # command exists but no reply: vanilla server (no uMod) or still booting
+            return jsonify({"error": "inventory unavailable — needs uMod/InvDump (or server still booting)"}), 404
+        if e.status in (0, 502, 503):
+            return jsonify({"error": e.message or "rcon unavailable — server restarting?"}), 503
+        return jsonify({"error": e.message}), e.status  # config problems pass through
+    raw = data.get("out") or ""
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return jsonify({"error": "bad reply from InvDump: " + raw[:80]}), 502
+    return jsonify({"sid": sid,
+                    "player": parsed.get("player") if isinstance(parsed, dict) else None})
+
+
+@app.post("/api/rcon")
+def api_rcon():
+    """Console command. Success → 200 {ok,out,ms}; ANY agent-side failure →
+    200 {ok:false,error,ms} so the console/drawer can render it inline (the
+    proven UI's contract). Host-level problems keep their own status."""
+    h, resp = resolve_host()
+    if resp:
+        return resp
+    b = request.get_json(silent=True) or {}
+    sid = str(b.get("server", ""))
+    cmd = str(b.get("cmd", "")).strip()
+    if not VALID_ID.match(sid):
+        return jsonify({"error": "bad server id"}), 400
+    if not cmd:
+        return jsonify({"error": "empty"}), 400
+    if len(cmd) > 500:
+        return jsonify({"error": "too long"}), 400
+    t0 = time.time()
+    try:
+        data = agents.rcon(h["base_url"], h["token"], sid, cmd,
+                           timeout_ms=10000, timeout=20)
+        return jsonify({"ok": True, "out": data.get("out", ""),
+                        "ms": data.get("ms") or int((time.time() - t0) * 1000)})
+    except agents.AgentError as e:
+        return jsonify({"ok": False, "error": e.message,
+                        "ms": int((time.time() - t0) * 1000)})
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ browser ── ferrous panel (central, docker compose)
 | 2 | agent MVP: power actions, stats, `docker logs -f` SSE stream (throttled) | ✅ |
 | 3 | central panel MVP: host/server registry, status, power, live logs end-to-end | ✅ |
 | 4 | RCON through agent: players, inventory (InvDump), console | ✅ |
-| 5 | deployment wizard + server file API (configs, oxide plugins) | ▢ |
+| 5 | deployment wizard + server file API (configs, oxide plugins) | ✅ |
 | 6 | `ferrous/rustserver` image: entrypoint from proven start.sh/auto-update.sh | ▢ |
 | 7 | polish: install one-liner, docs, agent version-skew notice | ▢ |
 
@@ -54,7 +54,10 @@ docker compose up -d --build        # → http://localhost:8122
 - In the **Hosts** tab: `＋ add host` → name, agent base url (`http://ip:8710`),
   agent token (from the agent's startup log) → **test** → **save**.
 - The **Servers** tab lists every container across hosts: power buttons, live console
-  (agent `docker logs -f` → panel → browser, throttled at 200 lines/s).
+  (agent `docker logs -f` → panel → browser, throttled at 200 lines/s), and
+  `＋ deploy server` (image → data dir → ports/env → pull, create, start).
+- The **Files** tab edits inside the selected server's data directory:
+  configs as text (atomic save), oxide plugins as upload/download (base64).
 
 **Panel env:** `FERROUS_DB` (default `ferrous.db`, set to `/data/…` in the image),
 `PANEL_SECRET` (persisted next to the DB if unset), `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`,
@@ -83,8 +86,11 @@ docs/     API contract (docs/api-v1.md)
 
 - Agent requires `Authorization: Bearer <token>` on every endpoint (constant-time compare,
   failed attempts logged with source IP).
-- Item endpoints (`power`/`stats`/`logs`) only act on containers labeled
+- Item endpoints (`power`/`stats`/`logs`/`files`) only act on containers labeled
   `ferrous.managed=true` — the token never becomes arbitrary-container control.
+  `POST /servers` (deploy) is the one token-wide capability: it creates new
+  containers from a validated spec (agent adds the managed labels, data bind
+  and `unless-stopped` restart itself — no privileged/raw create passthrough).
   Bind to localhost/VPN, or enable TLS (`--tls-cert/--tls-key`) before exposing
   across a network.
 - The Docker socket is never exposed as HTTP itself — the agent proxies a narrow API

@@ -82,6 +82,7 @@ function activateTab(name) {
   $$(".tab").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
   $$(".tabpane").forEach((p) => p.classList.toggle("active", p.id === "tab-" + name));
   if (name === "players") refreshPlayers();
+  if (name === "files") flLoad(FL_DIR);
   setupPlTimer();
 }
 $$(".tab").forEach((b) => b.addEventListener("click", () => activateTab(b.dataset.tab)));
@@ -636,6 +637,256 @@ $$(".chip[data-prompt]").forEach((c) => c.addEventListener("click", () => {
   if (pat && pat.trim()) runCmd(`${c.dataset.prompt} ${pat.trim()}`);
 }));
 $("#con-clear").addEventListener("click", () => { $("#conview").innerHTML = ""; });
+
+/* ------------------------------------------------------------- files */
+let FL_DIR = "", FL_FILE = null, FL_ENC = null, FL_CONTENT = null;
+
+function flBase() {
+  const sel = selected();
+  if (!sel) return null;
+  return `/api/files?host=${sel.host.id}&server=${encodeURIComponent(sel.srv.id)}`;
+}
+
+function parentOf(p) {
+  const i = p.lastIndexOf("/");
+  return i < 0 ? "" : p.slice(0, i);
+}
+
+function fmtSize(n) {
+  if (n == null || n === "") return "";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
+}
+
+async function flLoad(dir) {
+  const list = $("#fl-list");
+  const base = flBase();
+  if (!base) {
+    list.innerHTML = '<div class="dim center" style="padding:14px">no server selected — pick one in the header</div>';
+    $("#fl-path").textContent = "/";
+    return;
+  }
+  const { status, data } = await api(`${base}&path=${encodeURIComponent(dir || "")}`);
+  if (status !== 200 || !data) {
+    list.innerHTML = `<div class="err" style="padding:14px">${esc((data && data.error) || "load failed")}</div>`;
+    return;
+  }
+  if (data.type === "file") { flShowFile(data); return; }
+  FL_DIR = data.path || "";
+  $("#fl-path").textContent = "/" + FL_DIR;
+  const rows = [];
+  if (FL_DIR !== "") {
+    rows.push(`<div class="fl-entry" data-path="${esc(parentOf(FL_DIR))}" data-isdir="1">` +
+      `<span class="ico">↰</span><b>..</b></div>`);
+  }
+  for (const e of data.entries || []) {
+    const p = FL_DIR ? FL_DIR + "/" + e.name : e.name;
+    rows.push(`<div class="fl-entry" data-path="${esc(p)}"${e.dir ? ' data-isdir="1"' : ""}>` +
+      `<span class="ico">${e.dir ? "📁" : "📄"}</span>` +
+      `<span class="nm">${esc(e.name)}</span>` +
+      `<span class="dim sz">${e.dir ? "" : fmtSize(e.size)}</span></div>`);
+  }
+  list.innerHTML = rows.join("") || '<div class="dim center" style="padding:14px">empty directory</div>';
+  list.querySelectorAll(".fl-entry").forEach((el) => {
+    el.addEventListener("click", () => {
+      if (el.dataset.isdir) flLoad(el.dataset.path || "");
+      else flOpen(el.dataset.path);
+    });
+  });
+}
+
+async function flOpen(path) {
+  const base = flBase();
+  if (!base) return;
+  const { status, data } = await api(`${base}&path=${encodeURIComponent(path)}`);
+  if (status !== 200 || !data) { toast((data && data.error) || "load failed", "bad"); return; }
+  flShowFile(data);
+}
+
+function flShowFile(fi) {
+  FL_FILE = fi.path;
+  FL_ENC = fi.encoding;
+  FL_CONTENT = fi.content;
+  $("#fl-name").textContent = "/" + fi.path;
+  $("#fl-meta").textContent = `${fmtSize(fi.size)} · ${fi.encoding} · ${fi.mtime || ""}`;
+  const text = $("#fl-text");
+  const isText = fi.encoding === "utf8";
+  text.disabled = !isText;
+  text.value = isText ? fi.content : `(binary file, ${fmtSize(fi.size)} — download or replace via upload)`;
+  $("#fl-save").disabled = !isText;
+  $("#fl-download").disabled = false;
+}
+
+async function flSave() {
+  if (!FL_FILE || FL_ENC !== "utf8") return;
+  const sel = selected();
+  if (!sel) return;
+  const { status, data } = await api("/api/files", {
+    method: "PUT",
+    body: { host: sel.host.id, server: sel.srv.id, path: FL_FILE,
+            content: $("#fl-text").value, encoding: "utf8" },
+  });
+  if (status === 200 && data && data.ok) toast(`saved ${FL_FILE} (${fmtSize(data.size)})`, "ok");
+  else toast((data && data.error) || "save failed", "bad");
+}
+
+function flDownload() {
+  if (!FL_FILE) return;
+  let blob;
+  if (FL_ENC === "base64") {
+    const bin = atob(FL_CONTENT || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    blob = new Blob([bytes]);
+  } else {
+    blob = new Blob([FL_CONTENT ?? $("#fl-text").value], { type: "text/plain" });
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = FL_FILE.split("/").pop();
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+async function flUpload(file) {
+  const sel = selected();
+  if (!sel || !file) return;
+  const dataURL = await new Promise((res) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.readAsDataURL(file);
+  });
+  const b64 = String(dataURL).split(",")[1] || "";
+  const path = FL_DIR ? FL_DIR + "/" + file.name : file.name;
+  const { status, data } = await api("/api/files", {
+    method: "PUT",
+    body: { host: sel.host.id, server: sel.srv.id, path, content: b64, encoding: "base64" },
+  });
+  if (status === 200 && data && data.ok) {
+    toast(`uploaded ${path} (${fmtSize(data.size)})`, "ok");
+    flLoad(FL_DIR);
+  } else {
+    toast((data && data.error) || "upload failed", "bad");
+  }
+}
+
+$("#fl-refresh").addEventListener("click", () => flLoad(FL_DIR));
+$("#fl-up").addEventListener("click", () => flLoad(parentOf(FL_DIR)));
+$("#fl-save").addEventListener("click", flSave);
+$("#fl-download").addEventListener("click", flDownload);
+$("#fl-upload-btn").addEventListener("click", () => $("#fl-file").click());
+$("#fl-file").addEventListener("change", (e) => {
+  if (e.target.files[0]) flUpload(e.target.files[0]);
+  e.target.value = "";
+});
+
+/* ------------------------------------------------------------- deploy */
+let dpTouchedDir = false;
+
+function openDeploy() {
+  const sel = $("#dp-host");
+  sel.innerHTML = "";
+  for (const h of OVERVIEW.hosts) {
+    const o = document.createElement("option");
+    o.value = h.id;
+    o.textContent = h.name + (h.ok === false ? " (unreachable)" : "");
+    sel.appendChild(o);
+  }
+  if (!OVERVIEW.hosts.length) {
+    sel.innerHTML = '<option value="">no hosts — add one in the Hosts tab first</option>';
+  }
+  $("#dp-name").value = "";
+  $("#dp-datadir").value = "";
+  $("#dp-srvname").value = "";
+  $("#dp-rconpw").value = "";
+  $("#dp-ports").value = "28015/udp";
+  $("#dp-mem").value = "0";
+  $("#dp-env").value = "";
+  $("#deploy-err").textContent = "";
+  dpTouchedDir = false;
+  $("#deploy-modal").classList.remove("hidden");
+  $("#dp-name").focus();
+}
+
+$("#btn-deploy").addEventListener("click", openDeploy);
+$("#dp-cancel").addEventListener("click", () => $("#deploy-modal").classList.add("hidden"));
+
+$("#dp-gen").addEventListener("click", () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  $("#dp-rconpw").value = [...bytes].map((b) => chars[b % chars.length]).join("");
+});
+
+$("#dp-name").addEventListener("input", (e) => {
+  if (!dpTouchedDir) {
+    $("#dp-datadir").value = e.target.value ? "/srv/ferrous/" + e.target.value : "";
+  }
+});
+$("#dp-datadir").addEventListener("input", () => { dpTouchedDir = true; });
+
+function parsePorts(s) {
+  const out = [];
+  for (const part of String(s || "").split(",").map((x) => x.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d{1,5})\s*\/\s*(tcp|udp)$/i);
+    if (!m) return null;
+    out.push({ container: +m[1], host: +m[1], proto: m[2].toLowerCase() });
+  }
+  return out;
+}
+
+function parseEnvLines(s) {
+  const env = {};
+  for (const line of String(s || "").split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const i = t.indexOf("=");
+    if (i < 1) return null;
+    env[t.slice(0, i).trim()] = t.slice(i + 1);
+  }
+  return env;
+}
+
+$("#deploy-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("#deploy-err").textContent = "";
+  const ports = parsePorts($("#dp-ports").value);
+  if (ports === null) {
+    $("#deploy-err").textContent = 'ports: expected a comma list like "28015/udp, 28016/tcp"';
+    return;
+  }
+  const env = parseEnvLines($("#dp-env").value);
+  if (env === null) {
+    $("#deploy-err").textContent = "advanced env: one KEY=VALUE per line";
+    return;
+  }
+  if ($("#dp-srvname").value.trim()) env.SERVER_NAME = $("#dp-srvname").value.trim();
+  if ($("#dp-rconpw").value) env.RCON_PASSWORD = $("#dp-rconpw").value;
+  const body = {
+    host: +$("#dp-host").value,
+    name: $("#dp-name").value.trim(),
+    image: $("#dp-image").value.trim(),
+    data_dir: $("#dp-datadir").value.trim(),
+    env, ports, rcon_port: 28016,
+    memory_mb: parseInt($("#dp-mem").value || "0", 10) || 0,
+  };
+  $("#dp-submit").disabled = true;
+  $("#dp-submit").textContent = "deploying…";
+  const { status, data } = await api("/api/deploy", { method: "POST", body });
+  $("#dp-submit").disabled = false;
+  $("#dp-submit").textContent = "deploy";
+  if (status === 201 && data && data.ok) {
+    const res = data.res || {};
+    toast(`deployed ${body.name} — ${res.pulled ? "image pulled, " : ""}container starting`, "ok");
+    $("#deploy-modal").classList.add("hidden");
+    pollOverview();
+  } else {
+    let msg = (data && data.error) || `deploy failed (${status})`;
+    if (status === 409) msg = "a container with that name already exists on that host";
+    $("#deploy-err").textContent = msg;
+  }
+});
 
 /* ------------------------------------------------------------- hosts */
 let editId = null;   // null = add

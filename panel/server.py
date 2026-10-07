@@ -517,5 +517,75 @@ def api_rcon():
                         "ms": int((time.time() - t0) * 1000)})
 
 
+# ---------------------------------------------------------------------- files
+@app.get("/api/files")
+def api_files_list():
+    """List/read inside a container's data directory (agent-scoped root).
+    GET on a dir → {type:"dir", entries}; on a file → content (utf8/base64)."""
+    h, resp = resolve_host()
+    if resp:
+        return resp
+    srv = request.args.get("server", "")
+    if not VALID_ID.match(srv):
+        return jsonify({"error": "bad server id"}), 400
+    path = request.args.get("path", "")
+    if path.startswith("/") or "\x00" in path:
+        return jsonify({"error": "path must be relative to the data directory"}), 400
+    try:
+        return jsonify(agents.files_get(h["base_url"], h["token"], srv, path))
+    except agents.AgentError as e:
+        return jsonify({"error": e.message}), agent_status(e)
+
+
+@app.put("/api/files")
+def api_files_write():
+    """Write a file: {"server","path","content","encoding"} → atomic PUT."""
+    h, resp = resolve_host()
+    if resp:
+        return resp
+    b = request.get_json(silent=True) or {}
+    srv = str(b.get("server", ""))
+    path = str(b.get("path", ""))
+    content = b.get("content")
+    encoding = str(b.get("encoding", "utf8"))
+    if not VALID_ID.match(srv):
+        return jsonify({"error": "bad server id"}), 400
+    if not path or path.startswith("/") or "\x00" in path:
+        return jsonify({"error": "path must be a non-empty relative path"}), 400
+    if not isinstance(content, str):
+        return jsonify({"error": "content must be a string"}), 400
+    if encoding not in ("utf8", "base64"):
+        return jsonify({"error": "encoding must be utf8 or base64"}), 400
+    try:
+        return jsonify(agents.files_put(h["base_url"], h["token"], srv, path,
+                                        content, encoding))
+    except agents.AgentError as e:
+        return jsonify({"error": e.message}), agent_status(e)
+
+
+# --------------------------------------------------------------------- deploy
+@app.post("/api/deploy")
+def api_deploy():
+    """Deployment wizard backend: proxy the spec to the agent, which pulls,
+    creates and starts. The agent validates authoritatively — this check only
+    gives the form a fast, friendly error for the obvious omissions."""
+    h, resp = resolve_host()
+    if resp:
+        return resp
+    b = request.get_json(silent=True) or {}
+    missing = [k for k in ("name", "image", "data_dir") if not str(b.get(k, "")).strip()]
+    if missing:
+        return jsonify({"error": "missing required field(s): " + ", ".join(missing)}), 400
+    if not str(b["data_dir"]).startswith("/"):
+        return jsonify({"error": "data_dir must be an absolute path"}), 400
+    spec = {k: v for k, v in b.items() if k != "host"}  # agent validates the rest
+    try:
+        return jsonify(agents.deploy(h["base_url"], h["token"], spec)), 201
+    except agents.AgentError as e:
+        # 409 name conflict / 400 validation / 502 engine / 504 timeout pass
+        # through with the agent's message so the wizard can show it
+        return jsonify({"error": e.message}), agent_status(e)
+
+
 if __name__ == "__main__":
     app.run(host=BIND, port=PORT, threaded=True, debug=False)

@@ -85,6 +85,28 @@ def rcon(base, token, sid, cmd, timeout_ms=None, timeout=15):
     return _request(base, token, path, method="POST", body=body, timeout=timeout)
 
 
+def files_get(base, token, sid, path="", timeout=12):
+    """List a directory or read a file from the container's data root."""
+    q = urllib.parse.urlencode({"path": path})
+    return _request(base, token,
+                    f"/api/v1/servers/{urllib.parse.quote(sid)}/files?{q}",
+                    timeout=timeout)
+
+
+def files_put(base, token, sid, path, content, encoding="utf8", timeout=30):
+    """Atomically write a file (or upload bytes as base64)."""
+    return _request(base, token, f"/api/v1/servers/{urllib.parse.quote(sid)}/files",
+                    method="PUT",
+                    body={"path": path, "content": content, "encoding": encoding},
+                    timeout=timeout)
+
+
+def deploy(base, token, spec, timeout=900):
+    """Pull (if needed) → create → start. Long call: image pulls run minutes."""
+    return _request(base, token, "/api/v1/servers", method="POST", body=spec,
+                    timeout=timeout)
+
+
 def stream_lines(base, token, sid, tail, follow, timeout=60):
     """Yield raw SSE bytes from the agent's log stream.
 

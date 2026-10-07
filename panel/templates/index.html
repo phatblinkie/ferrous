@@ -37,16 +37,18 @@
   <button class="tab" data-tab="logs">Live Logs</button>
   <button class="tab" data-tab="players">Players <span id="tab-count" class="badge hidden">0</span></button>
   <button class="tab" data-tab="console">Console</button>
+  <button class="tab" data-tab="files">Files</button>
   <button class="tab" data-tab="hosts">Hosts</button>
 </nav>
 
 <!-- SERVERS -->
 <section id="tab-servers" class="tabpane active">
   <div class="toolbar">
+    <button class="btn primary sm" id="btn-deploy">＋ deploy server</button>
     <select id="host-filter" title="filter by host"><option value="all">all hosts</option></select>
     <span class="dim" id="srv-updated">–</span>
     <div class="spacer"></div>
-    <span class="dim">click ▶ ■ ↻ for power · select a server to drive Logs / Players / Console</span>
+    <span class="dim">click ▶ ■ ↻ for power · select a server to drive Logs / Players / Console / Files</span>
   </div>
   <table class="tbl" id="srv-table">
     <thead><tr>
@@ -132,6 +134,32 @@
   </form>
 </section>
 
+<!-- FILES -->
+<section id="tab-files" class="tabpane">
+  <div class="toolbar">
+    <button class="btn sm" id="fl-up" title="parent directory">↑ up</button>
+    <code id="fl-path">/</code>
+    <button class="btn sm" id="fl-refresh">↻ refresh</button>
+    <div class="spacer"></div>
+    <span class="dim" id="fl-meta">data dir of the selected server</span>
+    <button class="btn sm" id="fl-upload-btn">⤒ upload…</button>
+    <input type="file" id="fl-file" class="hidden">
+  </div>
+  <div class="files-split">
+    <div id="fl-list" class="fl-list"><div class="dim center">loading…</div></div>
+    <div class="fl-editor">
+      <div class="toolbar">
+        <b id="fl-name" class="dim">no file open</b>
+        <div class="spacer"></div>
+        <button class="btn sm" id="fl-download" disabled>⤓ download</button>
+        <button class="btn primary sm" id="fl-save" disabled>save</button>
+      </div>
+      <textarea id="fl-text" class="fl-text" spellcheck="false" disabled
+        placeholder="select a file to edit — configs are utf8, plugins download/upload as binary"></textarea>
+    </div>
+  </div>
+</section>
+
 <!-- HOSTS -->
 <section id="tab-hosts" class="tabpane">
   <div class="toolbar">
@@ -164,6 +192,54 @@
     </div>
     <div id="host-err" class="err"></div>
     <div id="host-test-out" class="test-out dim"></div>
+  </form>
+</div>
+
+<!-- deploy modal -->
+<div id="deploy-modal" class="overlay hidden">
+  <form id="deploy-form" class="card modal-card wide">
+    <h2>deploy server</h2>
+    <div class="form-grid">
+      <label class="fl">host
+        <select id="dp-host" required></select>
+      </label>
+      <label class="fl">container name
+        <input id="dp-name" placeholder="rust-main" pattern="[a-zA-Z0-9][a-zA-Z0-9_.-]*" required>
+      </label>
+      <label class="fl">image
+        <input id="dp-image" value="ferrous/rustserver:latest" required>
+      </label>
+      <label class="fl">data directory (host path)
+        <input id="dp-datadir" placeholder="/srv/ferrous/rust-main" required>
+      </label>
+      <label class="fl">SERVER_NAME (shown in browser)
+        <input id="dp-srvname" placeholder="My Rust Server">
+      </label>
+      <label class="fl">RCON_PASSWORD
+        <span class="pw-row">
+          <input id="dp-rconpw" autocomplete="off" placeholder="click ⟳ to generate">
+          <button class="btn sm" type="button" id="dp-gen" title="generate a strong password">⟳</button>
+        </span>
+      </label>
+      <label class="fl">game ports (comma list, port/proto)
+        <input id="dp-ports" value="28015/udp" title="empty = publish nothing">
+      </label>
+      <label class="fl">memory limit MB (0 = none)
+        <input id="dp-mem" type="number" min="0" step="256" value="0">
+      </label>
+      <label class="fl full">advanced env (one KEY=VALUE per line)
+        <textarea id="dp-env" rows="3" placeholder="SAVE_INTERVAL=300&#10;HEADERIMAGE_URL=https://…"></textarea>
+      </label>
+    </div>
+    <p class="dim small">pulls the image (first deploy can take minutes) → creates the container with
+      <code>ferrous.managed</code> + data bind + <code>unless-stopped</code> → starts it. RCON port 28016/tcp
+      is registered label-side and stays unpublished (the panel reaches it through the agent).</p>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="btn sm" type="button" id="dp-cancel">cancel</button>
+      <button class="btn primary" type="submit" id="dp-submit">deploy</button>
+    </div>
+    <div id="deploy-err" class="err"></div>
   </form>
 </div>
 

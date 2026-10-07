@@ -5,6 +5,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,22 +44,62 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
+	return c.doJSON(ctx, method, path, nil, out)
+}
+
+// doJSON sends an optional JSON body and decodes a JSON reply. A nil out
+// drains the (small) response so the connection can be reused.
+func (c *Client) doJSON(ctx context.Context, method, path string, in, out any) error {
+	var body []byte
+	if in != nil {
+		var err error
+		if body, err = json.Marshal(in); err != nil {
+			return err
+		}
+	}
+	res, err := c.raw(ctx, method, path, nil, body)
 	if err != nil {
 		return err
 	}
-	res, err := c.hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("docker unreachable: %w", err)
-	}
 	defer res.Body.Close()
-	if res.StatusCode >= 400 {
-		return apiErrorFrom(res)
-	}
 	if out == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1<<20))
 		return nil
 	}
 	return json.NewDecoder(res.Body).Decode(out)
+}
+
+// raw performs a request with an optional raw body and extra headers,
+// returning the response for 2xx (caller closes). Non-2xx becomes *APIError.
+// This is what image pulls use: they stream a JSON-lines progress body that
+// must be read to EOF under the caller's context deadline (minutes for big
+// images — there is intentionally no global client timeout).
+func (c *Client) raw(ctx context.Context, method, path string, hdr http.Header, body []byte) (*http.Response, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range hdr {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	res, err := c.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("docker unreachable: %w", err)
+	}
+	if res.StatusCode >= 400 {
+		defer res.Body.Close()
+		return nil, apiErrorFrom(res)
+	}
+	return res, nil
 }
 
 // apiErrorFrom builds a typed error from a non-2xx engine response body.

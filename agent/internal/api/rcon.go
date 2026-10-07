@@ -92,10 +92,10 @@ func (s *Server) pruneHubs(list []docker.Container) {
 
 // --- gate -------------------------------------------------------------------
 
-// rconGate: valid id → inspect (404/502) → managed (403) → capability
-// (400: rcon_port label, then RCON_PASSWORD env). Returns false after writing
-// the error; on true the caller owns a fresh inspect of the container.
-func (s *Server) rconGate(w http.ResponseWriter, r *http.Request, id string) (*docker.ContainerDetail, bool) {
+// inspectManaged: valid id → inspect (404/502) → managed (403). Returns
+// false after writing the error. Capability-specific checks (rcon labels,
+// data roots) belong to the callers.
+func (s *Server) inspectManaged(w http.ResponseWriter, r *http.Request, id string) (*docker.ContainerDetail, bool) {
 	d, err := s.docker.Inspect(r.Context(), id)
 	if err != nil {
 		writeDockerError(w, err)
@@ -103,6 +103,17 @@ func (s *Server) rconGate(w http.ResponseWriter, r *http.Request, id string) (*d
 	}
 	if d.Config.Labels["ferrous.managed"] != "true" {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "not a ferrous-managed container"})
+		return nil, false
+	}
+	return d, true
+}
+
+// rconGate: inspectManaged → capability (400: rcon_port label, then
+// RCON_PASSWORD env). Returns false after writing the error; on true the
+// caller owns a fresh inspect of the container.
+func (s *Server) rconGate(w http.ResponseWriter, r *http.Request, id string) (*docker.ContainerDetail, bool) {
+	d, ok := s.inspectManaged(w, r, id)
+	if !ok {
 		return nil, false
 	}
 	if _, ok := d.Config.Labels["ferrous.rcon_port"]; !ok {

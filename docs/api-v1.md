@@ -29,15 +29,23 @@ All endpoints are served by `ferrous-agent` on the listen address. Version prefi
 | GET | `/api/v1/servers/{id}/logs?tail=N&follow=0\|1` | ✅ phase 2 | SSE stream of `docker logs -f` (throttled: 200 lines/s) |
 | POST | `/api/v1/servers/{id}/rcon` | ✅ phase 4 | `{cmd, timeout_ms}` → correlated reply (hub held agent-side) |
 | GET | `/api/v1/servers/{id}/rcon` | ✅ phase 4 | hub diagnostics `{connected, error, pushes}` (never password/addr) |
-| GET | `/api/v1/servers/{id}/files/...` | ▢ 5 | read file, scoped to server data dir |
-| PUT | `/api/v1/servers/{id}/files/...` | ▢ 5 | write file (configs, oxide plugins) |
-| POST | `/api/v1/servers` | ▢ 5 | deploy: pull image → create volumes/ports/env → start |
+| GET | `/api/v1/servers/{id}/files?path=` | ✅ phase 5 | dir listing or file content under the container's data root |
+| PUT | `/api/v1/servers/{id}/files` | ✅ phase 5 | `{path, content, encoding}` → atomic write |
+| POST | `/api/v1/servers` | ✅ phase 5 | deploy: pull image → create (labels/bind/restart) → start |
 
 ## Data conventions (containers)
 
 Managed servers are containers carrying label **`ferrous.managed=true`**.
-Phase 5+ will add: `ferrous.datadir` (bind-mounted data path), port contract
-(game UDP / rcon TCP), env contract (`SERVER_NAME`, `RCON_PASSWORD`, …).
+Resolved contracts:
+
+- **data root (phase 5):** `ferrous.datadir` (absolute host path, set by
+  deploy) else the container's single writable mount. Files API paths are
+  relative to it; `..`/absolute/symlink escapes are rejected.
+- **rcon (phase 4):** password = env `RCON_PASSWORD`; port = label
+  `ferrous.rcon_port` (label presence = capability flag in `/servers`);
+  address = container IP, never published.
+- phase 6 image will add the port contract (game UDP / rcon TCP publish
+  rules) and its env contract (`SERVER_NAME`, …).
 
 ## Responses
 
@@ -140,3 +148,52 @@ published. Handshake: `GET /{password}` (current Rust, not `/websocket/…`).
 output is already delivered by the `logs` SSE endpoint, so there is **no
 `rcon-push` endpoint by design** (a second stream of the same text would
 double the browser's SSE load and race the docker-logs one).
+
+### GET /api/v1/servers/{id}/files?path=…
+
+The root is the container's data directory (`ferrous.datadir` label, else its
+single writable mount — ambiguity without the label is a 400). Paths are
+relative to that root; absolute inputs, `..` and symlinks leaving the root are
+rejected (TOCTOU aside: the token is already docker-socket equivalent).
+
+Directory:
+```json
+{"path": "oxide/plugins", "type": "dir",
+ "entries": [{"name": "InvDump.dll", "dir": false, "size": 48210, "mtime": "2026-10-07T00:00:00Z"}]}
+```
+File (text as `utf8`, anything with NUL/invalid-UTF-8 as `base64`):
+```json
+{"path": "server/main/server.cfg", "type": "file", "size": 17,
+ "mtime": "...", "encoding": "utf8", "content": "server.name \"x\"\n"}
+```
+
+### PUT /api/v1/servers/{id}/files
+```json
+{"path": "oxide/plugins/New.dll", "content": "TVqQAAMAAAA…", "encoding": "base64"}
+```
+→ `{"ok": true, "path": "...", "size": 123, "mtime": "..."}`. Writes are atomic
+(temp + rename), parent dirs are created, max 8 MB.
+
+Statuses: 400 bad path/encoding/body · 403 unmanaged · 404 unknown container
+or missing path/root · 405 · 413 too large · 500 unclassified IO · 502 engine.
+
+### POST /api/v1/servers (deploy)
+```json
+{"name": "rust-main", "image": "ferrous/rustserver:latest",
+ "data_dir": "/srv/ferrous/rust-main", "container_path": "/server",
+ "env": {"RCON_PASSWORD": "...", "SERVER_NAME": "..."},
+ "ports": [{"container": 28015, "host": 28015, "proto": "udp"}],
+ "rcon_port": 28016, "memory_mb": 8192,
+ "command": ["..."], "labels": {"ferrous.note": "..."}}
+```
+Agent behavior: mkdir `data_dir` → image already local? else pull (anonymous,
+streamed; an `{"error":…}` stream line fails it) → create → start. The agent
+adds `ferrous.managed=true`, `ferrous.datadir`, `ferrous.rcon_port`, a data
+bind at `container_path`, and `unless-stopped`; reserved labels cannot be
+overridden by `labels`. A failed start **keeps the container** (visible in
+`/servers`) and names its id in the error.
+
+→ 201 `{"ok": true, "res": {"id", "name", "image", "pulled", "started"}}`
+
+Statuses: 400 validation / pull failure / engine 4xx / mkdir · 405 · 409 name
+conflict · 413 body · 502 engine unreachable or start failure · 504 >15 min.

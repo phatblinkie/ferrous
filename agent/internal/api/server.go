@@ -48,11 +48,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/ping", s.auth(http.HandlerFunc(s.handlePing)))
 	mux.Handle("GET /api/v1/system", s.auth(http.HandlerFunc(s.handleSystem)))
 	mux.Handle("GET /api/v1/servers", s.auth(http.HandlerFunc(s.handleServers)))
+	mux.Handle("POST /api/v1/servers", s.auth(http.HandlerFunc(s.handleDeploy)))
 	mux.Handle("POST /api/v1/servers/{id}/power", s.auth(http.HandlerFunc(s.handlePower)))
 	mux.Handle("GET /api/v1/servers/{id}/stats", s.auth(http.HandlerFunc(s.handleStats)))
 	mux.Handle("GET /api/v1/servers/{id}/logs", s.auth(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("POST /api/v1/servers/{id}/rcon", s.auth(http.HandlerFunc(s.handleRcon)))
 	mux.Handle("GET /api/v1/servers/{id}/rcon", s.auth(http.HandlerFunc(s.handleRconStatus)))
+	mux.Handle("GET /api/v1/servers/{id}/files", s.auth(http.HandlerFunc(s.handleFiles)))
+	mux.Handle("PUT /api/v1/servers/{id}/files", s.auth(http.HandlerFunc(s.handleFiles)))
 	// catch-all: unknown paths get the same auth wall, then a JSON 404/405
 	mux.Handle("/", s.auth(http.HandlerFunc(s.handleNotFound)))
 	return s.logging(mux)
@@ -114,13 +117,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// knownGET lists GET endpoints so the catch-all can answer 405 (with Allow)
-// for wrong-method requests instead of masking them as 404. ServeMux's own
-// method-mismatch detection is shadowed by the catch-all pattern.
-var knownGET = map[string]bool{
-	"/api/v1/ping":    true,
-	"/api/v1/system":  true,
-	"/api/v1/servers": true,
+// exactEndpoints lists exact-path endpoints and their allowed methods so the
+// catch-all can answer 405 (with Allow) for wrong-method requests instead of
+// masking them as 404. ServeMux's own method-mismatch detection is shadowed
+// by the catch-all pattern.
+var exactEndpoints = map[string][]string{
+	"/api/v1/ping":    {http.MethodGet},
+	"/api/v1/system":  {http.MethodGet},
+	"/api/v1/servers": {http.MethodGet, http.MethodPost},
 }
 
 // paramEndpoints maps parameterized path suffixes to their allowed methods
@@ -133,11 +137,12 @@ var paramEndpoints = []struct {
 	{"/stats", []string{http.MethodGet}},
 	{"/logs", []string{http.MethodGet}},
 	{"/rcon", []string{http.MethodGet, http.MethodPost}},
+	{"/files", []string{http.MethodGet, http.MethodPut}},
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
-	if knownGET[r.URL.Path] {
-		w.Header().Set("Allow", "GET")
+	if ms, ok := exactEndpoints[r.URL.Path]; ok && !slices.Contains(ms, r.Method) {
+		w.Header().Set("Allow", strings.Join(ms, ", "))
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}

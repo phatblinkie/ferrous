@@ -6,6 +6,7 @@ import os
 import tempfile
 import threading
 import json
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _TMP = tempfile.mkdtemp(prefix="ferrous-test-")
@@ -129,30 +130,75 @@ def test_overview_empty(authed):
 
 
 # ------------------------------------------------------------ stub agent (rcon)
-# A canned agent answers /api/v1/servers/{id}/rcon so the panel's degradation
-# mapping (504→404 InvDump, 503→friendly, ok:false passthrough) is verifiable
-# without a live agent.
+# A canned agent answers the rcon / files / deploy endpoints so the panel's
+# contracts (504→404 InvDump, 503→friendly, ok:false passthrough, deploy
+# 201/409/400 mapping) are verifiable without a live agent.
 
-STUB = {"responses": {}, "last": None}  # cmd -> (status, payload); last body seen
+STUB = {
+    "responses": {},   # rcon: cmd -> (status, payload)
+    "last": None,      # last request body seen
+    "files": {},       # files GET: path -> payload
+    "files_status": None,  # files GET: (status, payload) override
+    "put_status": None,    # files PUT: (status, payload) override
+    "deploy": None,        # deploy POST: (status, payload) override
+}
 
 
 class _StubHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # keep pytest output clean
         pass
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length) or b"{}")
-        STUB["last"] = body
-        assert self.headers.get("Authorization", "").startswith("Bearer ")
-        code, payload = STUB["responses"].get(
-            body.get("cmd"), (200, {"ok": True, "out": "", "ms": 1}))
+    def _send(self, code, payload):
         raw = json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        STUB["last"] = body
+        assert self.headers.get("Authorization", "").startswith("Bearer ")
+        return body
+
+    def do_GET(self):
+        assert self.headers.get("Authorization", "").startswith("Bearer ")
+        if "/files" in self.path:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            path = q.get("path", [""])[0]
+            if STUB["files_status"]:
+                self._send(*STUB["files_status"])
+            else:
+                self._send(200, STUB["files"].get(
+                    path, {"path": path, "type": "dir", "entries": [{"name": "server", "dir": True}]}))
+            return
+        self._send(404, {"error": "not found"})
+
+    def do_PUT(self):
+        body = self._body()
+        if STUB["put_status"]:
+            self._send(*STUB["put_status"])
+        else:
+            self._send(200, {"ok": True, "path": body.get("path"),
+                             "size": len(body.get("content") or ""),
+                             "mtime": "2026-10-07T00:00:00Z"})
+
+    def do_POST(self):
+        if self.path.split("?")[0] == "/api/v1/servers":  # deploy
+            body = self._body()
+            if STUB["deploy"]:
+                self._send(*STUB["deploy"])
+            else:
+                self._send(201, {"ok": True, "res": {
+                    "Id": "f" * 64, "name": body.get("name"), "image": body.get("image"),
+                    "pulled": True, "started": True}})
+            return
+        body = self._body()
+        code, payload = STUB["responses"].get(
+            body.get("cmd"), (200, {"ok": True, "out": "", "ms": 1}))
+        self._send(code, payload)
 
 
 @pytest.fixture()
@@ -162,6 +208,10 @@ def stub_host(authed):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     STUB["responses"] = {}
     STUB["last"] = None
+    STUB["files"] = {}
+    STUB["files_status"] = None
+    STUB["put_status"] = None
+    STUB["deploy"] = None
     r = authed.post("/api/hosts", headers=CSRF, json={
         "name": f"stub-{threading.get_ident()}", "base_url": f"http://127.0.0.1:{srv.server_address[1]}",
         "token": "stub-token"})
@@ -308,3 +358,119 @@ def test_rcon_walls_unauthenticated(client):
     assert client.get("/api/players?host=1&server=x").status_code == 401
     assert client.get("/api/inventory?host=1&server=x&sid=76561198000000001").status_code == 401
     assert client.post("/api/rcon", json={"host": 1, "server": "x", "cmd": "status"}).status_code == 401
+
+
+# ------------------------------------------------------------------ files
+def test_files_list_and_read(stub_host):
+    client, hid = stub_host
+    STUB["files"]["server/main/server.cfg"] = {
+        "path": "server/main/server.cfg", "type": "file", "size": 17,
+        "mtime": "2026-10-07T00:00:00Z", "encoding": "utf8",
+        "content": 'server.name "x"\n'}
+
+    r = client.get(f"/api/files?host={hid}&server=abc&path=server/main/server.cfg")
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()["content"] == 'server.name "x"\n'
+
+    # directory listing (no path param → root)
+    r = client.get(f"/api/files?host={hid}&server=abc")
+    assert r.status_code == 200
+    assert r.get_json()["type"] == "dir"
+
+    # agent-side failure passes through with its code and message
+    STUB["files_status"] = (503, {"error": "agent exploding"})
+    r = client.get(f"/api/files?host={hid}&server=abc&path=x")
+    assert r.status_code == 503
+    assert r.get_json()["error"] == "agent exploding"
+
+
+def test_files_validation(stub_host, authed):
+    client, hid = stub_host
+    # absolute path rejected panel-side before touching the agent
+    r = client.get(f"/api/files?host={hid}&server=abc&path=/etc/passwd")
+    assert r.status_code == 400
+    # unknown host dominates
+    assert client.get("/api/files?host=999&server=abc").status_code == 404
+    # bad server id
+    assert client.get(f"/api/files?host={hid}&server=bad%20id").status_code == 400
+
+
+def test_files_write(stub_host, client):
+    client, hid = stub_host
+    r = client.put("/api/files", headers=CSRF, json={
+        "host": hid, "server": "abc", "path": "oxide/plugins/x.dll",
+        "content": "aGk=", "encoding": "base64"})
+    assert r.status_code == 200, r.get_json()
+    assert r.get_json()["ok"] is True
+    assert STUB["last"]["path"] == "oxide/plugins/x.dll"
+    assert STUB["last"]["encoding"] == "base64"
+
+    # validation: relative path, string content, known encoding
+    for bad in ({"path": "/etc/x", "content": "y"},
+                {"path": "ok", "content": 42},
+                {"path": "ok", "content": "y", "encoding": "hex"}):
+        body = {"host": hid, "server": "abc"}
+        body.update(bad)
+        assert client.put("/api/files", headers=CSRF, json=body).status_code == 400
+
+    # agent error passthrough
+    STUB["put_status"] = (500, {"error": "disk on fire"})
+    r = client.put("/api/files", headers=CSRF, json={
+        "host": hid, "server": "abc", "path": "a", "content": "x"})
+    assert r.status_code == 500
+    assert r.get_json()["error"] == "disk on fire"
+
+    # CSRF wall
+    assert client.put("/api/files", json={"host": hid, "server": "abc",
+                                          "path": "a", "content": "x"}).status_code == 403
+
+
+# ----------------------------------------------------------------- deploy
+def test_deploy_success(stub_host):
+    client, hid = stub_host
+    r = client.post("/api/deploy", headers=CSRF, json={
+        "host": hid, "name": "rust-1", "image": "ferrous/rustserver:latest",
+        "data_dir": "/srv/ferrous/rust-1",
+        "env": {"RCON_PASSWORD": "pw"}, "rcon_port": 28016,
+        "ports": [{"container": 28015, "host": 28015, "proto": "udp"}]})
+    assert r.status_code == 201, r.get_json()
+    res = r.get_json()["res"]
+    assert res["started"] is True and res["name"] == "rust-1"
+    # host stripped from the spec, everything else forwarded
+    assert "host" not in STUB["last"]
+    assert STUB["last"]["data_dir"] == "/srv/ferrous/rust-1"
+    assert STUB["last"]["env"] == {"RCON_PASSWORD": "pw"}
+
+
+def test_deploy_validation_and_errors(stub_host, authed):
+    client, hid = stub_host
+    # missing fields → friendly 400 before the agent
+    r = client.post("/api/deploy", headers=CSRF, json={"host": hid, "name": "x"})
+    assert r.status_code == 400
+    assert "image" in r.get_json()["error"] and "data_dir" in r.get_json()["error"]
+    # relative data_dir → 400
+    r = client.post("/api/deploy", headers=CSRF, json={
+        "host": hid, "name": "x", "image": "y", "data_dir": "srv/x"})
+    assert r.status_code == 400
+    # unknown host
+    r = client.post("/api/deploy", headers=CSRF, json={
+        "host": 999, "name": "x", "image": "y", "data_dir": "/srv/x"})
+    assert r.status_code == 404
+
+    # agent error mapping: conflict, validation, engine, timeout
+    for status, want in ((409, 409), (400, 400), (502, 502), (504, 504)):
+        STUB["deploy"] = (status, {"error": "agent said no"})
+        r = client.post("/api/deploy", headers=CSRF, json={
+            "host": hid, "name": "x", "image": "y", "data_dir": "/srv/x"})
+        assert r.status_code == want, (status, r.status_code, r.get_json())
+        assert r.get_json()["error"] == "agent said no"
+
+    # walls: no CSRF header on a non-GET
+    assert authed.post("/api/deploy", json={"host": hid}).status_code == 403  # no CSRF
+
+
+def test_deploy_walls_unauthenticated(client):
+    assert client.post("/api/deploy", json={"host": 1}).status_code == 401
+    assert client.get("/api/files?host=1&server=x").status_code == 401
+    assert client.put("/api/files", json={"host": 1, "server": "x",
+                                          "path": "a", "content": "b"}).status_code == 401

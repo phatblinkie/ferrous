@@ -27,6 +27,16 @@ type ContainerDetail struct {
 			IPAddress string `json:"IPAddress"`
 		} `json:"Networks"`
 	} `json:"NetworkSettings"`
+	Mounts []Mount `json:"Mounts"`
+}
+
+// Mount is the inspect mount entry the files API resolves a data root from.
+type Mount struct {
+	Type        string `json:"Type"` // bind | volume | tmpfs
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	RW          bool   `json:"RW"`
+	Name        string `json:"Name"`
 }
 
 // Inspect returns container detail; unknown ids surface as *APIError{404}.

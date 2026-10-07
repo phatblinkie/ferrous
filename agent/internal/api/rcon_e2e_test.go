@@ -293,6 +293,10 @@ func TestPruneHubsOnListing(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"rcon":true`) {
 		t.Fatalf("servers list must carry rcon capability: %s", rec.Body.String())
 	}
+	// listing carries the agent build version (panel's skew check reads it)
+	if !strings.Contains(rec.Body.String(), `"version":"test"`) {
+		t.Fatalf("servers list must carry the agent version: %s", rec.Body.String())
+	}
 }
 
 func TestRconConcurrencyThroughHTTP(t *testing.T) {

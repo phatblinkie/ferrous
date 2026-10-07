@@ -164,6 +164,31 @@ def agent_status(e):
     return 502 if e.status in (0, 401) else e.status
 
 
+_SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
+
+
+def panel_version():
+    """Panel build version — same `git describe` source as the agent binary
+    (compose build arg / PANEL_VERSION env); 'dev' for source runs."""
+    return os.environ.get("PANEL_VERSION", "dev")
+
+
+def version_skew(agent_ver, panel_ver):
+    """Upgrade hint when both sides are release semvers and differ. Dev/hash
+    builds can't be ordered, so they never nag — the version is still shown."""
+    if not agent_ver or not panel_ver:
+        return None
+    a, p = _SEMVER.match(str(agent_ver)), _SEMVER.match(str(panel_ver))
+    if not a or not p:
+        return None
+    av = tuple(int(x) for x in a.groups())
+    pv = tuple(int(x) for x in p.groups())
+    if av == pv:
+        return None
+    rel = "older" if av < pv else "newer"
+    return f"agent {agent_ver} is {rel} than panel {panel_ver} — update recommended"
+
+
 def resolve_host():
     """-> (host_row, None) or (None, error_response)"""
     h = get_host(request.args.get("host")
@@ -328,17 +353,22 @@ def api_overview():
         base = {"id": h["id"], "name": h["name"], "base_url": h["base_url"],
                 "enabled": bool(h["enabled"])}
         if not h["enabled"]:
-            return {**base, "ok": None, "error": None, "servers": []}
+            return {**base, "ok": None, "error": None, "servers": [],
+                    "agent_version": None, "skew": None}
         try:
             srv = agents.servers(h["base_url"], h["token"], timeout=6)
+            av = srv.get("version")  # rides the listing: no extra round trip
             return {**base, "ok": True, "error": None,
-                    "servers": srv.get("servers", [])}
+                    "servers": srv.get("servers", []),
+                    "agent_version": av, "skew": version_skew(av, panel_version())}
         except agents.AgentError as e:
-            return {**base, "ok": False, "error": e.message, "servers": []}
+            return {**base, "ok": False, "error": e.message, "servers": [],
+                    "agent_version": None, "skew": None}
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         out = list(pool.map(probe, hosts))
-    return jsonify({"hosts": out, "time": now_iso()})
+    return jsonify({"hosts": out, "panel_version": panel_version(),
+                    "time": now_iso()})
 
 
 # ---------------------------------------------------------------------- proxy

@@ -226,6 +226,7 @@ header select:focus { border-color: var(--accent); outline: none; }
 .hc-head { display: flex; align-items: center; gap: 10px; font-size: 15px; }
 .hc-url { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
 .hc-meta { font-size: 12.5px; }
+.hc-skew { color: var(--yellow); font-size: 12px; margin-top: 4px; }
 .hc-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 /* modal */

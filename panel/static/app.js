@@ -908,7 +908,9 @@ function renderHosts() {
       <div class="hc-head"><b>${esc(h.name)}</b> ${st}</div>
       <div class="hc-url dim">${esc(h.base_url)}</div>
       <div class="hc-meta dim">${h.servers.length} container${h.servers.length === 1 ? "" : "s"}` +
-      (h.ok === false && h.error ? `<br>error: ${esc(h.error)}` : "") + `</div>
+      (h.agent_version ? ` · agent ${esc(h.agent_version)}` : "") +
+      (h.ok === false && h.error ? `<br>error: ${esc(h.error)}` : "") +
+      (h.skew ? `<div class="hc-skew" title="panel ${esc(OVERVIEW.panel_version || "dev")}">⚠ ${esc(h.skew)}</div>` : "") + `</div>
       <div class="hc-actions">
         <button class="btn sm" data-a="test">test</button>
         <button class="btn sm" data-a="edit">edit</button>

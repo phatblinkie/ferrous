@@ -23,7 +23,7 @@ All endpoints are served by `ferrous-agent` on the listen address. Version prefi
 |---|---|---|---|
 | GET | `/api/v1/ping` | ✅ phase 1 | liveness: agent version, uptime |
 | GET | `/api/v1/system` | ✅ phase 1 | docker version + host info (cpu, mem, containers, images) |
-| GET | `/api/v1/servers` | ✅ phase 1 | list managed containers (`?all=1` includes unmanaged) |
+| GET | `/api/v1/servers` | ✅ phase 1 | list managed containers (`?all=1` includes unmanaged); carries `version` for the panel's skew notice |
 | POST | `/api/v1/servers/{id}/power` | ✅ phase 2 | `{action: start\|stop\|restart}`, `?grace=<0..600s>` (default 180, SIGINT→SIGKILL) |
 | GET | `/api/v1/servers/{id}/stats` | ✅ phase 2 | one-shot cpu/mem/net/pids sample |
 | GET | `/api/v1/servers/{id}/logs?tail=N&follow=0\|1` | ✅ phase 2 | SSE stream of `docker logs -f` (throttled: 200 lines/s) |
@@ -65,7 +65,7 @@ Resolved contracts:
 
 ### GET /api/v1/servers
 ```json
-{"count": 1, "filter": "managed",
+{"count": 1, "filter": "managed", "version": "1.0.0",
  "servers": [{"id": "a8d997bd40d6…", "short_id": "a8d997bd40d6", "name": "ferrous-p1-test",
               "image": "ubuntu:24.04", "state": "running", "status": "Up 4 seconds",
               "created": "2026-10-07T05:21:10Z", "managed": true,
@@ -73,6 +73,11 @@ Resolved contracts:
               "ports": [{"private": 28015, "proto": "udp", "public": 28015, "ip": "0.0.0.0"}]}]}
 ```
 `filter` is `"managed"` (default) or `"all"` (`?all=1`).
+`version` is the agent build version (same value as `/ping`) — it rides the
+listing the panel already polls, so the panel's version-skew notice costs no
+extra request. The panel compares it to its own `PANEL_VERSION` and shows an
+upgrade hint only when both are release semvers and differ (dev/hash builds
+never nag).
 
 ### POST /api/v1/servers/{id}/power
 ```json

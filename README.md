@@ -27,7 +27,7 @@ browser ── ferrous panel (central, docker compose)
 | 4 | RCON through agent: players, inventory (InvDump), console | ✅ |
 | 5 | deployment wizard + server file API (configs, oxide plugins) | ✅ |
 | 6 | `ferrous/rustserver` image: entrypoint from proven start.sh/auto-update.sh | ✅ |
-| 7 | polish: install one-liner, docs, agent version-skew notice | ▢ |
+| 7 | polish: install one-liner, docs, agent version-skew notice | ✅ |
 
 ## Quickstart (agent)
 
@@ -42,6 +42,29 @@ curl -H 'Authorization: Bearer changeme' http://127.0.0.1:8710/api/v1/servers
 
 If `FERROUS_TOKEN` is empty the agent generates one and prints it at startup (first-boot UX).
 
+## Install the agent as a service (one-liner)
+
+Run `make release` once (artifacts land in `dist/`), attach `dist/*` to a
+GitHub release, then on each remote host:
+
+```sh
+curl -fsSL https://github.com/OWNER/ferrous/releases/latest/download/install.sh \
+  | sudo sh -s -- --token YOURTOKEN
+```
+
+Replace `OWNER/ferrous` with your repo path (or export `FERROUS_RELEASE_BASE`
+for self-hosted releases). The installer detects amd64/arm64, unpacks the
+binary to `/usr/local/bin`, writes `/etc/ferrous/agent.env` (token + listen,
+mode 0600) and a systemd unit, then enables + starts it. Re-runs **never rotate
+an existing token**. No token yet? Omit `--token` — one is generated and
+printed for the panel. Useful options:
+
+- `--listen 0.0.0.0:8710` — reachable from the panel host (firewall it, or
+  front with TLS / a reverse proxy); the default binds localhost only.
+- `--base <url>` — a release base other than GitHub (`FERROUS_RELEASE_BASE`).
+- `--from <path>` — install a locally built binary, no download.
+- `--no-start` — write the files without touching systemd.
+
 ## Quickstart (panel)
 
 ```sh
@@ -52,7 +75,10 @@ docker compose up -d --build        # → http://localhost:8122
   `PANEL_ADMIN_PASSWORD` (compose env), otherwise a random password is generated
   and printed in `docker logs ferrous-panel`.
 - In the **Hosts** tab: `＋ add host` → name, agent base url (`http://ip:8710`),
-  agent token (from the agent's startup log) → **test** → **save**.
+  agent token (from the agent's startup log) → **test** → **save**. Each host
+  card shows the agent's build version and, when both sides are releases, a
+  ⚠ notice if the agent is older/newer than the panel (`PANEL_VERSION`) —
+  dev/hash builds are never nagged.
 - The **Servers** tab lists every container across hosts: power buttons, live console
   (agent `docker logs -f` → panel → browser, throttled at 200 lines/s), and
   `＋ deploy server` (image → data dir → ports/env → pull, create, start).
@@ -94,7 +120,18 @@ panel/    central panel (Flask + vanilla JS, containerized) — server.py, agent
           UI, Dockerfile, pytest suite
 image/    ferrous/rustserver Docker image (entrypoint, steamcmd update,
           oxide match, InvDump; `make image` / `make image-test`)
+install.sh  systemd installer for the agent (one-liner; `make install-test`)
+tests/    shell test suites (installer; hermetic — no network, no systemd)
 docs/     API contract (docs/api-v1.md)
+```
+
+## Tests
+
+```sh
+cd agent && go test ./... -race     # agent: api, docker, rcon hub, ws codec
+pytest panel/tests                  # panel: auth/CSRF, proxy + contract matrix
+make image-test                     # entrypoint behavior (stub game, offline)
+make install-test                   # installer (fake prefix, offline)
 ```
 
 ## Security model (v1)

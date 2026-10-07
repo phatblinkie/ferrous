@@ -129,6 +129,18 @@ def test_overview_empty(authed):
     assert data["hosts"] == []
 
 
+def test_version_skew_matrix():
+    skew = server.version_skew
+    assert "older" in skew("1.0.0", "1.2.0")
+    assert "newer" in skew("1.3.0", "1.2.0")
+    assert "newer" in skew("1.10.0", "1.9.0")   # numeric, not lexicographic
+    assert skew("1.2.0", "1.2.0") is None        # same release → quiet
+    assert skew("2ecb716", "1.2.0") is None      # hash build can't be ordered
+    assert skew("1.2.0", "dev") is None          # dev panel → no nag
+    assert skew(None, "1.2.0") is None
+    assert skew("1.2.0", None) is None
+
+
 # ------------------------------------------------------------ stub agent (rcon)
 # A canned agent answers the rcon / files / deploy endpoints so the panel's
 # contracts (504→404 InvDump, 503→friendly, ok:false passthrough, deploy
@@ -141,6 +153,7 @@ STUB = {
     "files_status": None,  # files GET: (status, payload) override
     "put_status": None,    # files PUT: (status, payload) override
     "deploy": None,        # deploy POST: (status, payload) override
+    "version": "1.2.3",    # GET /servers: agent build version (skew check)
 }
 
 
@@ -165,6 +178,11 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         assert self.headers.get("Authorization", "").startswith("Bearer ")
+        if self.path.split("?")[0] == "/api/v1/servers":  # overview listing
+            self._send(200, {"servers": [], "count": 0, "filter": "managed",
+                             "version": STUB["version"],
+                             "time": "2026-10-07T00:00:00Z"})
+            return
         if "/files" in self.path:
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             path = q.get("path", [""])[0]
@@ -212,6 +230,7 @@ def stub_host(authed):
     STUB["files_status"] = None
     STUB["put_status"] = None
     STUB["deploy"] = None
+    STUB["version"] = "1.2.3"
     r = authed.post("/api/hosts", headers=CSRF, json={
         "name": f"stub-{threading.get_ident()}", "base_url": f"http://127.0.0.1:{srv.server_address[1]}",
         "token": "stub-token"})
@@ -474,3 +493,23 @@ def test_deploy_walls_unauthenticated(client):
     assert client.get("/api/files?host=1&server=x").status_code == 401
     assert client.put("/api/files", json={"host": 1, "server": "x",
                                           "path": "a", "content": "b"}).status_code == 401
+
+
+def test_overview_agent_version_and_skew(stub_host, monkeypatch):
+    """Overview carries the agent version from the /servers listing (no extra
+    round trip) and a friendly notice only when both sides are release semvers."""
+    client, hid = stub_host
+    monkeypatch.setenv("PANEL_VERSION", "2.0.0")
+    data = client.get("/api/overview").get_json()
+    assert data["panel_version"] == "2.0.0"
+    h = next(x for x in data["hosts"] if x["id"] == hid)
+    assert h["ok"] is True
+    assert h["agent_version"] == "1.2.3"
+    assert h["skew"] and "older" in h["skew"]
+
+    # same release → quiet (version still displayed)
+    monkeypatch.setenv("PANEL_VERSION", "1.2.3")
+    data = client.get("/api/overview").get_json()
+    h = next(x for x in data["hosts"] if x["id"] == hid)
+    assert h["agent_version"] == "1.2.3"
+    assert h["skew"] is None

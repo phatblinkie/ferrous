@@ -119,6 +119,9 @@ func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {
 		"servers": servers,
 		"count":   len(servers),
 		"filter":  filterName,
+		// agent build version: rides the listing the panel already polls, so
+		// version-skew detection costs no extra round trip
+		"version": s.version,
 		"time":    now(),
 	})
 }

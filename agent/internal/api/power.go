@@ -15,7 +15,9 @@ import (
 var validID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 // handlePower: POST /api/v1/servers/{id}/power  {"action":"start|stop|restart"}
-// Optional query: grace=<seconds> (SIGTERM→SIGKILL window, 0..120, default 15).
+// Optional query: grace=<seconds> (SIGTERM→SIGKILL window, 0..600, default 180 —
+// Rust needs headroom to save, proven TimeoutStopSec=180; fast-exiting
+// containers are unaffected since docker stop returns when the process exits).
 func (s *Server) handlePower(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validID.MatchString(id) {
@@ -36,11 +38,11 @@ func (s *Server) handlePower(w http.ResponseWriter, r *http.Request) {
 			map[string]string{"error": fmt.Sprintf("unknown action %q (want start, stop or restart)", req.Action)})
 		return
 	}
-	grace := 15 // Rust needs headroom to save on SIGTERM before SIGKILL
+	grace := 180 // Rust needs headroom to save before SIGKILL (proven 180 s)
 	if g := r.URL.Query().Get("grace"); g != "" {
 		n, err := strconv.Atoi(g)
-		if err != nil || n < 0 || n > 120 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "grace must be 0..120 seconds"})
+		if err != nil || n < 0 || n > 600 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "grace must be 0..600 seconds"})
 			return
 		}
 		grace = n

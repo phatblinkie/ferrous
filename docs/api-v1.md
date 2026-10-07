@@ -24,7 +24,7 @@ All endpoints are served by `ferrous-agent` on the listen address. Version prefi
 | GET | `/api/v1/ping` | ✅ phase 1 | liveness: agent version, uptime |
 | GET | `/api/v1/system` | ✅ phase 1 | docker version + host info (cpu, mem, containers, images) |
 | GET | `/api/v1/servers` | ✅ phase 1 | list managed containers (`?all=1` includes unmanaged) |
-| POST | `/api/v1/servers/{id}/power` | ✅ phase 2 | `{action: start\|stop\|restart}`, `?grace=<0..120s>` (default 15, SIGTERM→SIGKILL) |
+| POST | `/api/v1/servers/{id}/power` | ✅ phase 2 | `{action: start\|stop\|restart}`, `?grace=<0..600s>` (default 180, SIGINT→SIGKILL) |
 | GET | `/api/v1/servers/{id}/stats` | ✅ phase 2 | one-shot cpu/mem/net/pids sample |
 | GET | `/api/v1/servers/{id}/logs?tail=N&follow=0\|1` | ✅ phase 2 | SSE stream of `docker logs -f` (throttled: 200 lines/s) |
 | POST | `/api/v1/servers/{id}/rcon` | ✅ phase 4 | `{cmd, timeout_ms}` → correlated reply (hub held agent-side) |
@@ -81,11 +81,15 @@ Resolved contracts:
 `state` is a best-effort post-action confirmation (empty string if the follow-up
 inspect hiccups). The action itself already succeeded in that case.
 
-> **Signal note for the image phase:** `stop`/`restart` rely on SIGTERM → grace → SIGKILL.
-> A process that is PID 1 inside the container and doesn't install a SIGTERM handler
-> **ignores SIGTERM** (verified live: `sleep infinity` waited the full grace). The
-> `ferrous/rustserver` entrypoint must forward signals (tini or a trapping wrapper)
-> so RustDedicated can save before shutdown.
+> **Signal note (phase 6, verified):** `stop`/`restart` send the container's
+> `STOPSIGNAL` (SIGINT for `ferrous/rustserver`, proven `KillSignal=SIGINT`) →
+> grace (default 180 s = proven `TimeoutStopSec`) → SIGKILL. The entrypoint
+> **`exec`s RustDedicated**, so the game is PID 1 and receives the signal
+> directly — no wrapper that could drop it. (A process that is PID 1 with no
+> handler ignores SIGTERM — verified live: `sleep infinity` waited the full
+> grace — which is why `STOPSIGNAL SIGINT` matters.) `docker stop` returns as
+> soon as the process exits, so the 180 s default never slows fast-exiting
+> containers.
 
 ### GET /api/v1/servers/{id}/stats
 ```json
@@ -197,3 +201,44 @@ overridden by `labels`. A failed start **keeps the container** (visible in
 
 Statuses: 400 validation / pull failure / engine 4xx / mkdir · 405 · 409 name
 conflict · 413 body · 502 engine unreachable or start failure · 504 >15 min.
+
+## `ferrous/rustserver` image contract (phase 6)
+
+`make image` builds `ferrous/rustserver:latest` from `image/` — a dockerized
+port of the proven local setup (`start.sh` + `steamcmd/update.sh` +
+`auto-update.sh` + `oxide-install.sh`, all referenced from this repo's
+`image/*.sh`; `InvDump.cs` is the proven plugin, verbatim).
+
+**Lifecycle:** the image is small (steamcmd + helpers). First boot installs
+Steam app 258550 **into the data dir** (`SERVER_DIR`, default `/server` — the
+`container_path` deploy binds). Later boots run `app_update` unless
+`AUTO_UPDATE=false`; a changed Steam `buildid` forces an Oxide re-apply.
+Oxide (uMod) comes from the latest `OxideMod/Oxide.Rust` GitHub release;
+`OXIDE=false` runs vanilla (panel inventory then degrades to a friendly 404).
+
+**Env contract** (all optional except the password; world params only apply to
+a fresh map — the identity's save wins afterwards):
+
+| env | default | meaning |
+|---|---|---|
+| `RCON_PASSWORD` | *(required)* | entrypoint refuses to boot without it |
+| `SERVER_NAME` | — | startup `+server.hostname` (a `server/<identity>/cfg/server.cfg` on disk overrides it — file is read after the command line) |
+| `SERVER_IDENTITY` | `main` | save folder `server/<identity>/` |
+| `SERVER_LEVEL` / `SERVER_SEED` / `SERVER_WORLDSIZE` / `SERVER_MAXPLAYERS` | `Procedural Map` / `20261007` / `3500` / `50` | proven start.sh defaults |
+| `AUTO_UPDATE` | `true` | steamcmd update on boot; `false` pins the build |
+| `OXIDE` | `true` | apply Oxide + seed `oxide/plugins/InvDump.cs`; `false` = vanilla |
+
+**Ports:** `28015/udp` game and `28016/udp` query are published by the deploy
+wizard; `28016/tcp` RCON is **never published** — it binds `0.0.0.0` *inside*
+the container (proven host setup bound `127.0.0.1`; in a container the agent
+must dial the container IP) and only the agent reaches it via the
+`ferrous.rcon_port` label.
+
+**Files tab paths:** server files sit at the data-dir root (`RustDedicated`,
+`oxide/`, `server/<identity>/cfg/server.cfg` — note `cfg/server.cfg`, proven
+gotcha: `server/<identity>/server.cfg` is ignored). Oxide updates, Steam
+buildids and original-assembly backups live under `.ferrous/oxide-cache/`.
+
+**Force-wipes** (first Thursday monthly) need a world reset: stop, delete the
+identity's save files (`server/<identity>/*.map` + save dbs) or change
+`SERVER_SEED`, start — same as the proven runbook.

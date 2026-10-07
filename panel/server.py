@@ -355,8 +355,8 @@ def api_power():
     if action not in ("start", "stop", "restart"):
         return jsonify({"error": "bad action"}), 400
     grace = b.get("grace")
-    if grace is not None and (not isinstance(grace, int) or not 0 <= grace <= 120):
-        return jsonify({"error": "grace must be 0..120"}), 400
+    if grace is not None and (not isinstance(grace, int) or not 0 <= grace <= 600):
+        return jsonify({"error": "grace must be 0..600"}), 400
     try:
         data = agents.power(h["base_url"], h["token"], sid, action, grace)
     except agents.AgentError as e:

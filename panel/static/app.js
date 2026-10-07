@@ -800,7 +800,7 @@ function openDeploy() {
   $("#dp-datadir").value = "";
   $("#dp-srvname").value = "";
   $("#dp-rconpw").value = "";
-  $("#dp-ports").value = "28015/udp";
+  $("#dp-ports").value = "28015/udp, 28016/udp";
   $("#dp-mem").value = "0";
   $("#dp-env").value = "";
   $("#deploy-err").textContent = "";

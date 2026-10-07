@@ -26,7 +26,7 @@ browser ── ferrous panel (central, docker compose)
 | 3 | central panel MVP: host/server registry, status, power, live logs end-to-end | ✅ |
 | 4 | RCON through agent: players, inventory (InvDump), console | ✅ |
 | 5 | deployment wizard + server file API (configs, oxide plugins) | ✅ |
-| 6 | `ferrous/rustserver` image: entrypoint from proven start.sh/auto-update.sh | ▢ |
+| 6 | `ferrous/rustserver` image: entrypoint from proven start.sh/auto-update.sh | ✅ |
 | 7 | polish: install one-liner, docs, agent version-skew notice | ▢ |
 
 ## Quickstart (agent)
@@ -59,6 +59,20 @@ docker compose up -d --build        # → http://localhost:8122
 - The **Files** tab edits inside the selected server's data directory:
   configs as text (atomic save), oxide plugins as upload/download (base64).
 
+## The game server image
+
+```sh
+make image          # docker build -t ferrous/rustserver:latest image
+make image-test     # offline entrypoint tests (stub game, no network)
+```
+
+`ferrous/rustserver` is a small image (steamcmd + entrypoint): first boot
+installs Steam app 258550 **into the data dir** (~4 GB), later boots update it
+and re-apply Oxide on build changes. Deploy it from the wizard with image
+`ferrous/rustserver:latest` — `RCON_PASSWORD` is required, `SERVER_NAME`,
+world params, `AUTO_UPDATE`/`OXIDE` and the rest are documented in
+[docs/api-v1.md](docs/api-v1.md) (image contract section).
+
 **Panel env:** `FERROUS_DB` (default `ferrous.db`, set to `/data/…` in the image),
 `PANEL_SECRET` (persisted next to the DB if unset), `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`,
 `PANEL_BIND`/`PANEL_PORT` (default `0.0.0.0:8122`).
@@ -78,7 +92,8 @@ docker compose up -d --build        # → http://localhost:8122
 agent/    Go agent (ferrous-agent) — stdlib only, static binary
 panel/    central panel (Flask + vanilla JS, containerized) — server.py, agents.py,
           UI, Dockerfile, pytest suite
-image/    ferrous/rustserver Docker image                     [phase 6]
+image/    ferrous/rustserver Docker image (entrypoint, steamcmd update,
+          oxide match, InvDump; `make image` / `make image-test`)
 docs/     API contract (docs/api-v1.md)
 ```
 

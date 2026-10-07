@@ -1,10 +1,11 @@
 // Package api serves the ferrous agent's HTTP API: bearer auth, request
-// logging, JSON errors, and the phase-1 discovery endpoints.
+// logging, JSON errors, discovery, power, stats and log streaming.
 package api
 
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -37,7 +38,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/ping", s.auth(http.HandlerFunc(s.handlePing)))
 	mux.Handle("GET /api/v1/system", s.auth(http.HandlerFunc(s.handleSystem)))
 	mux.Handle("GET /api/v1/servers", s.auth(http.HandlerFunc(s.handleServers)))
-	// catch-all: unknown paths get the same auth wall, then a JSON 404
+	mux.Handle("POST /api/v1/servers/{id}/power", s.auth(http.HandlerFunc(s.handlePower)))
+	mux.Handle("GET /api/v1/servers/{id}/stats", s.auth(http.HandlerFunc(s.handleStats)))
+	mux.Handle("GET /api/v1/servers/{id}/logs", s.auth(http.HandlerFunc(s.handleLogs)))
+	// catch-all: unknown paths get the same auth wall, then a JSON 404/405
 	mux.Handle("/", s.auth(http.HandlerFunc(s.handleNotFound)))
 	return s.logging(mux)
 }
@@ -107,11 +111,43 @@ var knownGET = map[string]bool{
 	"/api/v1/servers": true,
 }
 
+// paramEndpoints maps parameterized path suffixes to their methods (the
+// exact-path table can't match ids like /servers/abc/power).
+var paramEndpoints = []struct {
+	suffix string
+	method string
+}{
+	{"/power", http.MethodPost},
+	{"/stats", http.MethodGet},
+	{"/logs", http.MethodGet},
+}
+
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 	if knownGET[r.URL.Path] {
 		w.Header().Set("Allow", "GET")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
+		for _, pe := range paramEndpoints {
+			if strings.HasSuffix(r.URL.Path, pe.suffix) && r.Method != pe.method {
+				w.Header().Set("Allow", pe.method)
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+				return
+			}
+		}
+	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+}
+
+// writeDockerError maps engine failures to our error contract: unknown
+// container → 404, anything else (daemon down, API error) → 502 JSON — a
+// friendly host-level error the panel can render, never a crash.
+func writeDockerError(w http.ResponseWriter, err error) {
+	var ae *docker.APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusNotFound {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such container"})
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 }

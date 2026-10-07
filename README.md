@@ -22,7 +22,7 @@ browser ── ferrous panel (central, docker compose)
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | repo scaffold, API contract, agent skeleton (token auth, `/ping`, docker discovery) | ✅ |
-| 2 | agent MVP: power actions, stats, `docker logs -f` stream | ▢ |
+| 2 | agent MVP: power actions, stats, `docker logs -f` SSE stream (throttled) | ✅ |
 | 3 | central panel MVP: host/server registry, status, power, live logs end-to-end | ▢ |
 | 4 | RCON through agent: players, inventory (InvDump), console | ▢ |
 | 5 | deployment wizard + server file API (configs, oxide plugins) | ▢ |
@@ -64,8 +64,10 @@ docs/     API contract (docs/api-v1.md)
 
 - Agent requires `Authorization: Bearer <token>` on every endpoint (constant-time compare,
   failed attempts logged with source IP).
-- Agent token = full control of the host's Docker daemon. Bind to localhost/VPN, or enable
-  TLS (`--tls-cert/--tls-key`) before exposing across a network.
+- Item endpoints (`power`/`stats`/`logs`) only act on containers labeled
+  `ferrous.managed=true` — the token never becomes arbitrary-container control.
+  Bind to localhost/VPN, or enable TLS (`--tls-cert/--tls-key`) before exposing
+  across a network.
 - The Docker socket is never exposed as HTTP itself — the agent proxies a narrow API
   (discovery → power → logs → files scoped to server data dirs).
 

@@ -53,20 +53,25 @@ func (c *Client) do(ctx context.Context, method, path string, out any) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode >= 400 {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		var e struct {
-			Message string `json:"message"`
-		}
-		_ = json.Unmarshal(b, &e)
-		if e.Message == "" {
-			e.Message = string(b)
-		}
-		return &APIError{Status: res.StatusCode, Message: e.Message}
+		return apiErrorFrom(res)
 	}
 	if out == nil {
 		return nil
 	}
 	return json.NewDecoder(res.Body).Decode(out)
+}
+
+// apiErrorFrom builds a typed error from a non-2xx engine response body.
+func apiErrorFrom(res *http.Response) error {
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	var e struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(b, &e)
+	if e.Message == "" {
+		e.Message = string(b)
+	}
+	return &APIError{Status: res.StatusCode, Message: e.Message}
 }
 
 // Ping checks engine liveness (GET /_ping → "OK").

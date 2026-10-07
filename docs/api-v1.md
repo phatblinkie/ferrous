@@ -7,9 +7,13 @@ All endpoints are served by `ferrous-agent` on the listen address. Version prefi
 - **Auth:** every request needs `Authorization: Bearer <token>` (agent config). Missing/wrong
   token → `401 {"error":"unauthorized"}` (constant-time compare; failures logged with IP).
 - **Errors:** JSON body `{"error": "human-readable"}`.
-  - `401` bad/missing token · `404` unknown path · `405` wrong method
+  - `401` bad/missing token · `403` container exists but is **not ferrous-managed** ·
+    `404` unknown path/container · `405` wrong method · `400` bad parameter/body
   - `502` docker layer failure (daemon down / API error) — panel shows it as a friendly
     host-level error, never a crash.
+- **Managed gate:** `/{id}/power|stats|logs` only operate on containers labeled
+  `ferrous.managed=true` (defense in depth: the token never becomes "arbitrary
+  container control"). `?all=1` on the list endpoint is display/adoption only.
 - **Timestamps:** RFC3339, UTC.
 - **Transport:** plain HTTP on localhost; set `--tls-cert/--tls-key` for HTTPS across networks.
 
@@ -20,9 +24,9 @@ All endpoints are served by `ferrous-agent` on the listen address. Version prefi
 | GET | `/api/v1/ping` | ✅ phase 1 | liveness: agent version, uptime |
 | GET | `/api/v1/system` | ✅ phase 1 | docker version + host info (cpu, mem, containers, images) |
 | GET | `/api/v1/servers` | ✅ phase 1 | list managed containers (`?all=1` includes unmanaged) |
-| POST | `/api/v1/servers/{id}/power` | ▢ 2 | `{action: start\|stop\|restart}` |
-| GET | `/api/v1/servers/{id}/stats` | ▢ 2 | live cpu/mem/net (docker stats) |
-| GET | `/api/v1/servers/{id}/logs?tail=N` | ▢ 2 | SSE stream of `docker logs -f` (throttled) |
+| POST | `/api/v1/servers/{id}/power` | ✅ phase 2 | `{action: start\|stop\|restart}`, `?grace=<0..120s>` (default 15, SIGTERM→SIGKILL) |
+| GET | `/api/v1/servers/{id}/stats` | ✅ phase 2 | one-shot cpu/mem/net/pids sample |
+| GET | `/api/v1/servers/{id}/logs?tail=N&follow=0\|1` | ✅ phase 2 | SSE stream of `docker logs -f` (throttled: 200 lines/s) |
 | POST | `/api/v1/servers/{id}/rcon` | ▢ 4 | `{cmd, timeout}` → correlated reply (hub held agent-side) |
 | GET | `/api/v1/servers/{id}/rcon-push` | ▢ 4 | SSE of WebRCON Identifier:0 push lines |
 | GET | `/api/v1/servers/{id}/files/...` | ▢ 5 | read file, scoped to server data dir |
@@ -35,7 +39,7 @@ Managed servers are containers carrying label **`ferrous.managed=true`**.
 Phase 5+ will add: `ferrous.datadir` (bind-mounted data path), port contract
 (game UDP / rcon TCP), env contract (`SERVER_NAME`, `RCON_PASSWORD`, …).
 
-## Responses (phase 1)
+## Responses
 
 ### GET /api/v1/ping
 ```json
@@ -61,3 +65,41 @@ Phase 5+ will add: `ferrous.datadir` (bind-mounted data path), port contract
               "ports": [{"private": 28015, "proto": "udp", "public": 28015, "ip": "0.0.0.0"}]}]}
 ```
 `filter` is `"managed"` (default) or `"all"` (`?all=1`).
+
+### POST /api/v1/servers/{id}/power
+```json
+{"ok": true, "action": "restart", "id": "ferrous-x", "state": "running", "time": "..."}
+```
+`state` is a best-effort post-action confirmation (empty string if the follow-up
+inspect hiccups). The action itself already succeeded in that case.
+
+> **Signal note for the image phase:** `stop`/`restart` rely on SIGTERM → grace → SIGKILL.
+> A process that is PID 1 inside the container and doesn't install a SIGTERM handler
+> **ignores SIGTERM** (verified live: `sleep infinity` waited the full grace). The
+> `ferrous/rustserver` entrypoint must forward signals (tini or a trapping wrapper)
+> so RustDedicated can save before shutdown.
+
+### GET /api/v1/servers/{id}/stats
+```json
+{"ok": true, "id": "ferrous-x", "state": "running",
+ "stats": {"cpu_percent": 100.1, "mem_used_mb": 412.6, "mem_limit_mb": 48040.8,
+           "mem_percent": 0.9, "net_rx_mb": 1.2, "net_tx_mb": 3.4, "pids": 12},
+ "time": "..."}
+```
+CPU uses the CLI formula (cpu_delta/system_delta × online_cpus); if the engine's
+built-in `precpu` is unusable (single-sample mode) a second sample is taken
+~500ms later and the delta is computed agent-side.
+
+### GET /api/v1/servers/{id}/logs (SSE)
+```
+data: {"kind":"hello","server":"ferrous-x","tail":100,"follow":true,"tty":false,"time":"..."}
+data: {"kind":"log","t":"2026-10-07T06:00:00.282502864Z","text":"3000"}
+data: {"kind":"log","t":"...","text":"[ferrous] console output too fast — throttling…","throttle":true}
+data: {"kind":"log","t":"...","text":"[ferrous] 2801 lines dropped (console throttle)","throttle":true}
+data: {"kind":"end","time":"..."}
+```
+Sequence: one `hello`, zero+ `log`, then a terminal event — `end` (container
+stream closed), `error` (stream failure), or nothing (client disconnected).
+Throttle: fixed window, 200 lines/s; on strike it notices once, drops, and
+summarizes at window rollover or stream end. `tail` is `0..10000` or `all`
+(default 100); `follow=0` fetches history and ends.

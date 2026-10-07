@@ -1,0 +1,19 @@
+services:
+  panel:
+    build: ./panel
+    image: ferrous/panel
+    container_name: ferrous-panel
+    ports:
+      - "8122:8122"
+    environment:
+      - FERROUS_DB=/data/ferrous.db
+      # optional: pick the first-boot admin credentials (otherwise generated + logged)
+      - PANEL_ADMIN_USER=${PANEL_ADMIN_USER:-admin}
+      - PANEL_ADMIN_PASSWORD=${PANEL_ADMIN_PASSWORD:-}
+      - PANEL_SECRET=${PANEL_SECRET:-}
+    volumes:
+      - ferrous-data:/data
+    restart: unless-stopped
+
+volumes:
+  ferrous-data:

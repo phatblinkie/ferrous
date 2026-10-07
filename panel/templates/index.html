@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ferrous panel</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- login -->
+<div id="login" class="overlay hidden">
+  <form id="login-form" class="card login-card">
+    <h1>⚙ ferrous</h1>
+    <p class="dim">game server control plane</p>
+    <input type="text" id="login-user" placeholder="username" autocomplete="username" autofocus>
+    <input type="password" id="login-pw" placeholder="password" autocomplete="current-password">
+    <button class="btn primary" type="submit">Sign in</button>
+    <div id="login-err" class="err"></div>
+  </form>
+</div>
+
+<header>
+  <div class="brand">⚙ <b>ferrous</b> <span class="dim">panel</span></div>
+  <div class="stat"><span id="host-pill" class="pill grey">…</span></div>
+  <div class="stat dim" id="host-summary">no hosts yet</div>
+  <div class="spacer"></div>
+  <button class="btn sm" id="btn-refresh" title="refresh now">↻ refresh</button>
+  <button class="btn sm" id="btn-logout">sign out</button>
+</header>
+
+<nav>
+  <button class="tab active" data-tab="servers">Servers</button>
+  <button class="tab" data-tab="hosts">Hosts</button>
+</nav>
+
+<!-- SERVERS -->
+<section id="tab-servers" class="tabpane active">
+  <div class="toolbar">
+    <select id="host-filter" title="filter by host"><option value="all">all hosts</option></select>
+    <span class="dim" id="srv-updated">–</span>
+    <div class="spacer"></div>
+    <span class="dim">click ▶ ■ ↻ for power · open the live console below</span>
+  </div>
+  <table class="tbl" id="srv-table">
+    <thead><tr>
+      <th>Server</th><th>Host</th><th>Image</th><th>State</th><th>Status</th>
+      <th></th><th></th>
+    </tr></thead>
+    <tbody id="srv-body"><tr><td colspan="7" class="dim center">loading…</td></tr></tbody>
+  </table>
+</section>
+
+<!-- console drawer -->
+<div id="console-panel" class="hidden">
+  <div class="toolbar">
+    <b id="con-title">console</b>
+    <span class="pill grey" id="log-state">connecting…</span>
+    <input id="log-filter" placeholder="filter (substring)…">
+    <label class="chk"><input type="checkbox" id="log-follow" checked> follow</label>
+    <button class="btn sm" id="log-clear">clear</button>
+    <div class="spacer"></div>
+    <span class="dim" id="log-count">0 lines</span>
+    <button class="btn sm" id="con-close">✕ close</button>
+  </div>
+  <div id="logview" class="logview"></div>
+</div>
+
+<!-- HOSTS -->
+<section id="tab-hosts" class="tabpane">
+  <div class="toolbar">
+    <button class="btn primary sm" id="btn-add-host">＋ add host</button>
+    <div class="spacer"></div>
+    <span class="dim">each host runs <code>ferrous-agent</code> · status refreshes every 5s</span>
+  </div>
+  <div id="host-cards" class="hosts-grid"></div>
+</section>
+
+<!-- host modal -->
+<div id="host-modal" class="overlay hidden">
+  <form id="host-form" class="card modal-card">
+    <h2 id="host-modal-title">add host</h2>
+    <label class="fl">name
+      <input id="hf-name" placeholder="e.g. box-1" maxlength="40" required>
+    </label>
+    <label class="fl">agent base url
+      <input id="hf-url" placeholder="http://192.0.2.10:8710" required>
+    </label>
+    <label class="fl">agent token
+      <input id="hf-token" placeholder="from the agent's startup log" autocomplete="off">
+    </label>
+    <label class="chk"><input type="checkbox" id="hf-enabled" checked> enabled</label>
+    <div class="modal-actions">
+      <button class="btn sm" type="button" id="hf-test">test</button>
+      <div class="spacer"></div>
+      <button class="btn sm" type="button" id="hf-cancel">cancel</button>
+      <button class="btn primary" type="submit">save</button>
+    </div>
+    <div id="host-err" class="err"></div>
+    <div id="host-test-out" class="test-out dim"></div>
+  </form>
+</div>
+
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

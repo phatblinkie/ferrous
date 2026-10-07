@@ -23,7 +23,7 @@ browser ── ferrous panel (central, docker compose)
 |---|---|---|
 | 1 | repo scaffold, API contract, agent skeleton (token auth, `/ping`, docker discovery) | ✅ |
 | 2 | agent MVP: power actions, stats, `docker logs -f` SSE stream (throttled) | ✅ |
-| 3 | central panel MVP: host/server registry, status, power, live logs end-to-end | ▢ |
+| 3 | central panel MVP: host/server registry, status, power, live logs end-to-end | ✅ |
 | 4 | RCON through agent: players, inventory (InvDump), console | ▢ |
 | 5 | deployment wizard + server file API (configs, oxide plugins) | ▢ |
 | 6 | `ferrous/rustserver` image: entrypoint from proven start.sh/auto-update.sh | ▢ |
@@ -42,6 +42,24 @@ curl -H 'Authorization: Bearer changeme' http://127.0.0.1:8710/api/v1/servers
 
 If `FERROUS_TOKEN` is empty the agent generates one and prints it at startup (first-boot UX).
 
+## Quickstart (panel)
+
+```sh
+docker compose up -d --build        # → http://localhost:8122
+```
+
+- First boot creates the admin user: credentials come from `PANEL_ADMIN_USER` /
+  `PANEL_ADMIN_PASSWORD` (compose env), otherwise a random password is generated
+  and printed in `docker logs ferrous-panel`.
+- In the **Hosts** tab: `＋ add host` → name, agent base url (`http://ip:8710`),
+  agent token (from the agent's startup log) → **test** → **save**.
+- The **Servers** tab lists every container across hosts: power buttons, live console
+  (agent `docker logs -f` → panel → browser, throttled at 200 lines/s).
+
+**Panel env:** `FERROUS_DB` (default `ferrous.db`, set to `/data/…` in the image),
+`PANEL_SECRET` (persisted next to the DB if unset), `PANEL_ADMIN_USER`, `PANEL_ADMIN_PASSWORD`,
+`PANEL_BIND`/`PANEL_PORT` (default `0.0.0.0:8122`).
+
 **Flags / env** (`flag > env > default`):
 
 | flag | env | default |
@@ -55,7 +73,8 @@ If `FERROUS_TOKEN` is empty the agent generates one and prints it at startup (fi
 
 ```
 agent/    Go agent (ferrous-agent) — stdlib only, static binary
-panel/    central panel (Flask + vanilla JS, containerized)   [phase 3]
+panel/    central panel (Flask + vanilla JS, containerized) — server.py, agents.py,
+          UI, Dockerfile, pytest suite
 image/    ferrous/rustserver Docker image                     [phase 6]
 docs/     API contract (docs/api-v1.md)
 ```
@@ -70,6 +89,13 @@ docs/     API contract (docs/api-v1.md)
   across a network.
 - The Docker socket is never exposed as HTTP itself — the agent proxies a narrow API
   (discovery → power → logs → files scoped to server data dirs).
+- Panel: single DB-backed admin (scrypt hashes, 5-strike login lockout), signed
+  session cookies, CSRF header (`X-Requested-With: ferrous`) on every mutation,
+  agent tokens masked in API responses (`••••last4` — they never reach the browser).
+  Put the panel behind a reverse proxy with TLS (or a VPN) before exposing it:
+  sessions are plain HTTP in v1.
+- The panel dials the agent (never the reverse): expose nothing on the agent beyond
+  localhost/VPN/TLS as above.
 
 ## Acknowledgements
 

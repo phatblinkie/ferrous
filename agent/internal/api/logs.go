@@ -72,24 +72,64 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		_ = sseWrite(w, fl, map[string]any{"kind": "log", "t": now(), "text": notice, "throttle": true})
 	})
 
-	err = s.docker.StreamLogs(r.Context(), id, d.Config.Tty, tail, follow, func(ll docker.LogLine) error {
+	// Pump docker output in a goroutine so the main loop can emit heartbeats
+	// on quiet servers (keeps the panel→agent leg — and its read timeout — alive).
+	lines := make(chan docker.LogLine, 256)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.docker.StreamLogs(r.Context(), id, d.Config.Tty, tail, follow, func(ll docker.LogLine) error {
+			select {
+			case lines <- ll:
+				return nil
+			case <-r.Context().Done():
+				return r.Context().Err()
+			}
+		})
+	}()
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+
+	writeLine := func(ll docker.LogLine) error {
 		if !th.allow(time.Now()) {
 			return nil
 		}
 		return sseWrite(w, fl, map[string]any{
 			"kind": "log", "t": ll.Time.Format(time.RFC3339Nano), "text": ll.Text,
 		})
-	})
-	th.flush() // summarize drops before the terminal event
-
-	if err != nil {
-		if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
-			return // client disconnected — normal
-		}
-		_ = sseWrite(w, fl, map[string]any{"kind": "error", "error": err.Error()})
-		return
 	}
-	_ = sseWrite(w, fl, map[string]any{"kind": "end", "time": now()})
+
+	for {
+		select {
+		case ll := <-lines:
+			if err := writeLine(ll); err != nil {
+				return // client gone
+			}
+		case err := <-errCh:
+		drain: // deliver lines that landed before the stream ended
+			for {
+				select {
+				case ll := <-lines:
+					_ = writeLine(ll)
+				default:
+					break drain
+				}
+			}
+			th.flush() // summarize drops before the terminal event
+			if err != nil {
+				if r.Context().Err() == nil && !errors.Is(err, context.Canceled) {
+					_ = sseWrite(w, fl, map[string]any{"kind": "error", "error": err.Error()})
+				}
+				return
+			}
+			_ = sseWrite(w, fl, map[string]any{"kind": "end", "time": now()})
+			return
+		case <-ticker.C:
+			_, _ = w.Write([]byte(": hb\n\n"))
+			fl.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // throttler is a fixed-window console rate limiter (wings-style): at most max

@@ -48,11 +48,11 @@ Run `make release` once (artifacts land in `dist/`), attach `dist/*` to a
 GitHub release, then on each remote host:
 
 ```sh
-curl -fsSL https://github.com/OWNER/ferrous/releases/latest/download/install.sh \
+curl -fsSL https://github.com/phatblinkie/ferrous/releases/latest/download/install.sh \
   | sudo sh -s -- --token YOURTOKEN
 ```
 
-Replace `OWNER/ferrous` with your repo path (or export `FERROUS_RELEASE_BASE`
+Forks should adjust the URL (or export `FERROUS_RELEASE_BASE`
 for self-hosted releases). The installer detects amd64/arm64, unpacks the
 binary to `/usr/local/bin`, writes `/etc/ferrous/agent.env` (token + listen,
 mode 0600) and a systemd unit, then enables + starts it. Re-runs **never rotate

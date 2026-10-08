@@ -2,9 +2,9 @@
 # ferrous agent installer — installs the agent as a systemd service.
 #
 # One-liner (against a published release):
-#   curl -fsSL https://github.com/OWNER/ferrous/releases/latest/download/install.sh \
+#   curl -fsSL https://github.com/phatblinkie/ferrous/releases/latest/download/install.sh \
 #     | sudo sh -s -- --token YOURTOKEN
-# (replace OWNER/ferrous with your repo, or export FERROUS_RELEASE_BASE)
+# (set FERROUS_RELEASE_BASE to use a fork or self-hosted release)
 #
 # Options (each has a FERROUS_* env equivalent):
 #   --token <t>    API bearer token. Default: FERROUS_TOKEN → token already in
@@ -18,7 +18,7 @@
 #   --prefix <dir> test hook: install under <dir>, skips systemd
 set -eu
 
-BASE="${FERROUS_RELEASE_BASE:-https://github.com/OWNER/ferrous/releases/latest/download}"
+BASE="${FERROUS_RELEASE_BASE:-https://github.com/phatblinkie/ferrous/releases/latest/download}"
 TOKEN="${FERROUS_TOKEN:-}"
 LISTEN="${FERROUS_LISTEN:-127.0.0.1:8710}"
 FROM=""
